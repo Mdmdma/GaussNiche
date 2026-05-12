@@ -67,35 +67,35 @@ pa_random <- function(background, N_pa, pres = NULL, seed = 123, ...) {
 #' @param ...         Ignored additional arguments (for interface compatibility)
 pa_uniform <- function(background, N_pa, pres = NULL, seed = 123,
                        env.rast = NULL, grid.res = 5, thres = 0.75, ...) {
-  
+
   if (!requireNamespace("sf", quietly = TRUE))
     stop("Package 'sf' is required for pa_uniform. ",
          "Install with: install.packages('sf')")
-  
+
   if (is.null(pres))
     stop("pa_uniform requires pres (presence rows from the background).")
-  
+
   if (is.null(env.rast))
     stop("pa_uniform requires 'env.rast' (the original environmental SpatRaster, ",
          "e.g. envData). Pass pa_env_rast = envData in virtualSpecies(). ",
          "Do NOT pass rpc$PCs: USE runs rastPCA() internally and rePCA-ing ",
          "PC scores produces a rotated E-space that breaks the exclusion filter.")
-  
+
   set.seed(seed)
-  
+
   # Build sf object of presences in geographic space so USE can project them
   pres_sf <- sf::st_as_sf(
     pres[, c("x", "y"), drop = FALSE],
     coords = c("x", "y"),
     crs    = terra::crs(env.rast)
   )
-  
+
   # Approximate n.tr: target N_pa total across all non-excluded grid cells.
   # Use a generous ceiling; we subsample down to N_pa afterwards.
   # n.tr = PA per grid cell. Over-request by 3x (unknown excluded fraction),
   # then subsample to N_pa. Floor of 5 ensures non-empty cells are covered.
   n_tr_approx <- max(5L, ceiling(N_pa * 3L / max(grid.res^2L, 10L)))
-  
+
   pa_result <- tryCatch(
     USE::paSampling(
       env.rast  = env.rast,
@@ -115,22 +115,22 @@ pa_uniform <- function(background, N_pa, pres = NULL, seed = 123,
       NULL
     }
   )
-  
+
   if (is.null(pa_result) || nrow(pa_result) == 0L) {
     warning("pa_uniform returned 0 pseudo-absences; falling back to pa_random.")
     return(pa_random(background, N_pa, pres, seed))
   }
-  
+
   # When sub.ts = FALSE, USE returns the sf object directly (no $obs.tr).
   # The sf GEOMETRY is in PC / E-space; geographic coordinates are stored
   # as plain attribute columns 'x' and 'y' — retrieve them with st_drop_geometry().
   pa_attrs <- sf::st_drop_geometry(pa_result)
-  
+
   # Match back to background rows by geographic coordinates (4 dp = ~11 m
   # precision, safe for any raster resolution >= 1 arc-second)
   bg_key <- paste(round(background$x, 4L), round(background$y, 4L))
   pa_key <- paste(round(pa_attrs$x,   4L), round(pa_attrs$y,   4L))
-  
+
   idx       <- match(pa_key, bg_key)
   idx_valid <- unique(idx[!is.na(idx)])
   pa_bg     <- background[idx_valid, ]
@@ -142,7 +142,7 @@ pa_uniform <- function(background, N_pa, pres = NULL, seed = 123,
     warning("pa_uniform: only ", length(idx_valid), " of ", N_pa,
             " requested pseudo-absences matched background coordinates. ",
             "Remainder will be padded with random draws.")
-  
+
   # Adjust to exactly N_pa ─────────────────────────────────────────────────
   if (nrow(pa_bg) >= N_pa) {
     pa_bg <- pa_bg[sample(nrow(pa_bg), N_pa, replace = FALSE), ]
@@ -161,7 +161,138 @@ pa_uniform <- function(background, N_pa, pres = NULL, seed = 123,
               " pseudo-absences instead of ", N_pa, " (E-space constraint).")
     }
   }
-  
+
+  row.names(pa_bg) <- NULL
+  pa_bg
+}
+
+
+#' MCMC pseudo-absence sampler (USE.MCMC package)
+#'
+#' Samples pseudo-absences via a Markov chain whose stationary distribution
+#' is the environmental GMM density minus the species-presence GMM density.
+#' Internally calls USE.MCMC::paSamplingMcmc(); see that function for the
+#' full algorithm and the C++/R engine dispatch.
+#'
+#' @param background   Full background data.frame (x, y, PC1, PC2, suit, ...)
+#' @param N_pa         Number of pseudo-absences to return
+#' @param pres         Presence rows from background (required)
+#' @param seed         RNG seed; forwarded to paSamplingMcmc() as seed.number
+#' @param env.rast     SpatRaster of the ORIGINAL environmental variables
+#'                     (envData), NOT rpc$PCs. paSamplingMcmc() always runs
+#'                     rastPCA() internally — feeding it PC rasters re-rotates
+#'                     an already-orthogonal space and breaks the
+#'                     environmental/species GMM filters, making the sampler
+#'                     degenerate to random sampling. Pass envData.
+#' @param chain.length MCMC chain length (default 10000)
+#' @param burnIn       Robbins-Monro adaptation steps (default 1000)
+#' @param num.chains   Parallel chains (default 1)
+#' @param num.cores    Cores for multi-chain parallelism (default 1)
+#' @param engine       "auto" (default), "R", or "cpp". Leave "auto" unless
+#'                     forcing the reference loop for comparison runs.
+#' @param ...          Ignored additional arguments (interface compatibility,
+#'                     swallows pa_uniform's grid.res / thres)
+pa_mcmc <- function(background, N_pa, pres = NULL, seed = 123,
+                    env.rast = NULL,
+                    chain.length = 10000,
+                    burnIn = 1000,
+                    num.chains = 1, num.cores = 1,
+                    engine = "auto", ...) {
+
+  if (!requireNamespace("USE.MCMC", quietly = TRUE))
+    stop("Package 'USE.MCMC' is required for pa_mcmc. ",
+         "Install with: devtools::install('../USE.MCMC')")
+  if (!requireNamespace("sf", quietly = TRUE))
+    stop("Package 'sf' is required for pa_mcmc.")
+
+  if (is.null(pres))
+    stop("pa_mcmc requires pres (presence rows from the background).")
+  if (is.null(env.rast))
+    stop("pa_mcmc requires 'env.rast' (the original environmental SpatRaster, ",
+         "e.g. envData). Pass pa_env_rast = envData in virtualSpecies(). ",
+         "Do NOT pass rpc$PCs: USE.MCMC runs rastPCA() internally and ",
+         "rePCA-ing PC scores breaks the GMM filters.")
+
+  set.seed(seed)
+
+  pres_sf <- sf::st_as_sf(
+    pres[, c("x", "y"), drop = FALSE],
+    coords = c("x", "y"),
+    crs    = terra::crs(env.rast)
+  )
+
+  # Over-request to absorb paSamplingMcmc's internal distance-threshold filter
+  # and the dedup step on the first PC dimension. Subsampled to N_pa below.
+  n_target <- ceiling(N_pa * 1.2)
+
+  pa_result <- tryCatch(
+    USE.MCMC::paSamplingMcmc(
+      env.data.raster = env.rast,
+      pres            = pres_sf,
+      n.samples       = n_target,
+      chain.length    = chain.length,
+      burnIn          = burnIn,
+      num.chains      = num.chains,
+      num.cores       = num.cores,
+      seed.number     = seed,
+      engine          = engine,
+      verbose         = FALSE,
+      plot_proc       = FALSE
+    ),
+    error = function(e) {
+      warning("USE.MCMC::paSamplingMcmc failed ('", conditionMessage(e),
+              "'). Falling back to pa_random.")
+      NULL
+    }
+  )
+
+  if (is.null(pa_result) || nrow(pa_result) == 0L) {
+    warning("pa_mcmc returned 0 pseudo-absences; falling back to pa_random.")
+    return(pa_random(background, N_pa, pres, seed))
+  }
+
+  # paSamplingMcmc returns an sf whose geometry IS the geographic (x, y)
+  # location (line 100 of paSamplingMcmc.R passes coords = c("x", "y") to
+  # st_as_sf, so x/y live in the geometry column, NOT as attributes).
+  # Pull them back out with st_coordinates() rather than st_drop_geometry().
+  pa_coords <- sf::st_coordinates(pa_result)
+  pa_x <- pa_coords[, 1L]
+  pa_y <- pa_coords[, 2L]
+
+  # Match back to background rows by geographic coordinates (4 dp = ~11 m).
+  bg_key <- paste(round(background$x, 4L), round(background$y, 4L))
+  pa_key <- paste(round(pa_x,         4L), round(pa_y,         4L))
+  idx       <- match(pa_key, bg_key)
+  idx_valid <- unique(idx[!is.na(idx)])
+  pa_bg     <- background[idx_valid, ]
+
+  if (length(idx_valid) == 0L)
+    warning("pa_mcmc: NO geographic coordinates matched the background. ",
+            "Check that env.rast covers the same extent as background and ",
+            "that you passed envData (not PC rasters) as pa_env_rast.")
+  if (length(idx_valid) < N_pa * 0.5)
+    warning("pa_mcmc: only ", length(idx_valid), " of ", N_pa,
+            " requested pseudo-absences matched background coordinates. ",
+            "Remainder will be padded with random draws.")
+
+  # Adjust to exactly N_pa — same pad-or-subsample pattern as pa_uniform.
+  if (nrow(pa_bg) >= N_pa) {
+    pa_bg <- pa_bg[sample(nrow(pa_bg), N_pa, replace = FALSE), ]
+  } else {
+    pres_key  <- paste(round(pres$x, 4L), round(pres$y, 4L))
+    all_key   <- paste(round(background$x, 4L), round(background$y, 4L))
+    non_pres  <- which(!all_key %in% pres_key)
+    remaining <- setdiff(non_pres, idx_valid)
+    extra_n   <- N_pa - nrow(pa_bg)
+    if (length(remaining) >= extra_n) {
+      pa_bg <- rbind(pa_bg, background[sample(remaining, extra_n), ])
+    } else if (length(remaining) > 0L) {
+      pa_bg <- rbind(pa_bg, background[remaining, ])
+      warning("pa_mcmc: obtained ", nrow(pa_bg),
+              " pseudo-absences instead of ", N_pa, ".")
+    }
+  }
+
   row.names(pa_bg) <- NULL
   pa_bg
 }
@@ -249,12 +380,12 @@ virtualSpecies <- function(
     verbose          = TRUE,
     ...
 ) {
-  
+
   # Default the PA environment raster to envData if not supplied
   if (is.null(pa_env_rast)) pa_env_rast <- envData
-  
+
   # ── 1. BIVARIATE GAUSSIAN NICHE ────────────────────────────────────────────
-  
+
   Sigma <- matrix(
     c(sigma_PC1^2,
       rho * sigma_PC1 * sigma_PC2,
@@ -262,7 +393,7 @@ virtualSpecies <- function(
       sigma_PC2^2),
     nrow = 2L
   )
-  
+
   # Normalise so suitability = 1 exactly at the optimum mu
   peak_density <- mvtnorm::dmvnorm(
     x = matrix(mu, nrow = 1L), mean = mu, sigma = Sigma
@@ -272,10 +403,10 @@ virtualSpecies <- function(
     mean  = mu,
     sigma = Sigma
   ) / peak_density
-  
+
   dt$suit <- suitability
   if (verbose) cat("Suitability range:", round(range(suitability), 4L), "\n")
-  
+
   # ── 2. RESPONSE CURVES & EQUATIONS ─────────────────────────────────────────
   #
   # Marginal response along PC1 (PC2 fixed at optimum mu[2]):
@@ -287,15 +418,15 @@ virtualSpecies <- function(
   # Logit of suitability:
   #   logit(suit) = log(suit) - log(1 - suit)
   #   This is non-linear in PC axes; its shape is shown in the logit plots.
-  
+
   Sigma_inv <- solve(Sigma)
   a    <- Sigma_inv[1L, 1L]
   b    <- Sigma_inv[1L, 2L]   # off-diagonal = Sigma_inv[2,1]
   cc   <- Sigma_inv[2L, 2L]
-  
+
   pc1_seq <- seq(min(dt$PC1), max(dt$PC1), length.out = 500L)
   pc2_seq <- seq(min(dt$PC2), max(dt$PC2), length.out = 500L)
-  
+
   rc_PC1 <- data.frame(
     PC1  = pc1_seq,
     suit = exp(-0.5 * (pc1_seq - mu[1L])^2 / sigma_PC1^2)
@@ -307,7 +438,7 @@ virtualSpecies <- function(
   # logit is ±Inf at suit = 0 or 1; keep only finite values for plotting
   rc_PC1$logit_suit <- log(rc_PC1$suit / (1 - rc_PC1$suit))
   rc_PC2$logit_suit <- log(rc_PC2$suit / (1 - rc_PC2$suit))
-  
+
   # Equation strings (stored and printed for record-keeping)
   eq_PC1 <- sprintf(
     "suit(PC1 | PC2=mu2) = exp(-0.5 * (PC1 - %.3f)^2 / %.4f)",
@@ -327,7 +458,7 @@ virtualSpecies <- function(
     "logit(suit) = log(suit) - log(1-suit)",
     "[non-linear in PC axes; inspect logit response curve plots]"
   )
-  
+
   if (verbose) {
     cat("── Equations ──────────────────────────────────────────────\n")
     cat(" PC1  :", eq_PC1,  "\n")
@@ -335,7 +466,7 @@ virtualSpecies <- function(
     cat(" 2-D  :", eq_2d,   "\n")
     cat(" Logit:", eq_logit, "\n")
   }
-  
+
   # Response curve plots
   p_rc_PC1 <- ggplot(rc_PC1, aes(x = PC1)) +
     geom_line(aes(y = suit), colour = "firebrick", linewidth = 1) +
@@ -345,7 +476,7 @@ virtualSpecies <- function(
          subtitle = eq_PC1,
          x = pc1_lab, y = "Suitability [0, 1]") +
     theme_classic(base_size = 13)
-  
+
   p_rc_PC2 <- ggplot(rc_PC2, aes(x = PC2)) +
     geom_line(aes(y = suit), colour = "firebrick", linewidth = 1) +
     geom_rug(data = dt, aes(x = PC2), alpha = 0.04, colour = "grey40",
@@ -354,24 +485,24 @@ virtualSpecies <- function(
          subtitle = eq_PC2,
          x = pc2_lab, y = "Suitability [0, 1]") +
     theme_classic(base_size = 13)
-  
+
   rc_PC1_fin <- rc_PC1[is.finite(rc_PC1$logit_suit), ]
   rc_PC2_fin <- rc_PC2[is.finite(rc_PC2$logit_suit), ]
-  
+
   p_rc_logit_PC1 <- ggplot(rc_PC1_fin, aes(x = PC1, y = logit_suit)) +
     geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
     geom_line(colour = "steelblue", linewidth = 1) +
     labs(title = "Logit(suit) — PC1", x = pc1_lab, y = "logit(suit)") +
     theme_classic(base_size = 13)
-  
+
   p_rc_logit_PC2 <- ggplot(rc_PC2_fin, aes(x = PC2, y = logit_suit)) +
     geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
     geom_line(colour = "steelblue", linewidth = 1) +
     labs(title = "Logit(suit) — PC2", x = pc2_lab, y = "logit(suit)") +
     theme_classic(base_size = 13)
-  
+
   # ── 3. BACKGROUND KDE + NICHE CONTOUR GRID ─────────────────────────────────
-  
+
   if (is.null(kde_df)) {
     kde_raw        <- MASS::kde2d(dt$PC1, dt$PC2, n = 200L)
     kde_df         <- expand.grid(PC1 = kde_raw$x, PC2 = kde_raw$y)
@@ -380,7 +511,7 @@ virtualSpecies <- function(
   # Normalise density to [0,1] so the colour scale is comparable across
   # species regardless of background sample size.
   kde_df$density <- kde_df$density / max(kde_df$density)
-  
+
   grid_pc <- expand.grid(
     PC1 = seq(min(dt$PC1), max(dt$PC1), length.out = 300L),
     PC2 = seq(min(dt$PC2), max(dt$PC2), length.out = 300L)
@@ -388,19 +519,19 @@ virtualSpecies <- function(
   grid_pc$suit <- mvtnorm::dmvnorm(
     as.matrix(grid_pc), mean = mu, sigma = Sigma
   ) / peak_density
-  
+
   # ── 4. HYPERVOLUME BANDWIDTH (fixed across species and samplers) ────────────
   #
   # estimate_bandwidth() is called on the FULL BACKGROUND so that all
   # hypervolumes — regardless of species niche location or PA sampler — are
   # computed at the same KDE resolution. This is essential for comparability.
-  
+
   if (is.null(bw)) {
     if (verbose) cat("\nEstimating hypervolume bandwidth from background…\n")
     bw <- hypervolume::estimate_bandwidth(dt[, c("PC1", "PC2")])
   }
   if (verbose) cat("Bandwidth (PC1, PC2):", round(bw, 5L), "\n")
-  
+
   # ── 5. PRE-DRAW ALL BERNOULLI REALISATIONS ─────────────────────────────────
   #
   # Separating the Bernoulli draws from the PA sampling loop makes it clear
@@ -408,9 +539,9 @@ virtualSpecies <- function(
   # cells happen to be "presences" from the same underlying suitability
   # surface — i.e., a source of uncertainty inherent to the simulation, not
   # to the PA strategy.
-  
+
   if (verbose) cat("\nDrawing", n_realizations, "Bernoulli realisations…\n")
-  
+
   pa_matrix <- vapply(
     seq_len(n_realizations),
     FUN = function(r) {
@@ -419,31 +550,31 @@ virtualSpecies <- function(
     },
     FUN.VALUE = integer(nrow(dt))
   )  # result: nrow(dt) x n_realizations integer matrix
-  
+
   # Realization 1 is used as the reference for representative plots / rasters
   ref_pa       <- pa_matrix[, 1L]
   dt$pa        <- ref_pa
   ref_pres_all <- dt[ref_pa == 1L, ]   # full set — used for prevalence/rasters
-  
+
   # Subsample presences for plots, PA sampling, and hypervolumes.
   # The full ref_pres_all is kept separately so prevalence is unaffected.
   set.seed(seed_base)
   ref_pres <- if (nrow(ref_pres_all) > max_pres)
     ref_pres_all[sample(nrow(ref_pres_all), max_pres), ]
   else ref_pres_all
-  
+
   if (verbose) {
     cat("Prevalence (ref. realisation 1):", round(mean(ref_pa), 3L), "\n")
     cat("N presences total:", nrow(ref_pres_all),
         "| subsampled to:", nrow(ref_pres), "\n")
   }
-  
+
   # Fixed background ranges (denominator for relative coverage metric)
   bg_range_PC1 <- diff(range(dt$PC1))
   bg_range_PC2 <- diff(range(dt$PC2))
-  
+
   # ── 6. SHARED NICHE PLOT (reference realisation) ───────────────────────────
-  
+
   p_niche <- ggplot() +
     geom_contour_filled(data = kde_df,
                         aes(x = PC1, y = PC2, z = density),
@@ -465,7 +596,7 @@ virtualSpecies <- function(
       x = pc1_lab, y = pc2_lab
     ) +
     theme_classic(base_size = 13)
-  
+
   # ── 7. SAMPLER LOOP ────────────────────────────────────────────────────────
   #
   # Output structure:
@@ -478,15 +609,15 @@ virtualSpecies <- function(
   #                     rel_cov_PC1, rel_cov_PC2, prop_true_abs
   #     plots       : list(p_pa, p_bias_PC1, p_bias_PC2, p_boxplot)
   #   )
-  
+
   sampler_results <- vector("list", length(pa_samplers))
   names(sampler_results) <- names(pa_samplers)
-  
+
   for (s_name in names(pa_samplers)) {
-    
+
     sampler  <- pa_samplers[[s_name]]
     if (verbose) cat("\n══ Sampler:", s_name, "══\n")
-    
+
     # -- Reference pseudo-absences for diagnostic plots (realisation 1) ------
     N_pa_ref   <- max(1L, round(nrow(ref_pres) / bgk_prev))
     pseudo_ref <- tryCatch(
@@ -498,22 +629,22 @@ virtualSpecies <- function(
         stop("Sampler '", s_name, "' failed on reference realisation: ", e$message)
       }
     )
-    
+
     # -- Metrics loop across all n_realizations --------------------------------
     #
     # NOTE ON PERFORMANCE: each iteration calls hypervolume_gaussian() twice
     # (presences + pseudo-absences). Presences are capped at max_pres (default
     # 500) so N_pa is also capped at max_pres / bgk_prev. This keeps each
     # hypervolume call fast regardless of species prevalence.
-    
+
     metrics_list <- vector("list", n_realizations)
-    
+
     for (r in seq_len(n_realizations)) {
-      
+
       pa_r         <- pa_matrix[, r]
       pres_r_all   <- dt[pa_r == 1L, ]   # full draw — used for prop_true_abs
       true_abs_r   <- dt[pa_r == 0L, ]
-      
+
       # Subsample presences to max_pres to cap hypervolume runtime.
       # N_pa is derived from the subsampled count so the PA:presence
       # ratio (bgk_prev) is consistent across all realisations.
@@ -521,14 +652,14 @@ virtualSpecies <- function(
       pres_r <- if (nrow(pres_r_all) > max_pres)
         pres_r_all[sample(nrow(pres_r_all), max_pres), ]
       else pres_r_all
-      
+
       N_pa_r <- max(1L, round(nrow(pres_r) / bgk_prev))
-      
+
       if (nrow(pres_r) < 5L || N_pa_r < 5L) {
         if (verbose) message("  r=", r, ": too few points, skipping.")
         next
       }
-      
+
       pseudo_r <- tryCatch(
         sampler(
           background = dt, N_pa = N_pa_r, pres = pres_r,
@@ -540,7 +671,7 @@ virtualSpecies <- function(
         }
       )
       if (is.null(pseudo_r) || nrow(pseudo_r) < 5L) next
-      
+
       # Hypervolume — Gaussian KDE with fixed background bandwidth
       hyp_pres_r <- tryCatch(
         hypervolume::hypervolume_gaussian(
@@ -566,22 +697,22 @@ virtualSpecies <- function(
         ),
         error = function(e) NULL
       )
-      
+
       if (is.null(hyp_pres_r) || is.null(hyp_pa_r)) {
         if (verbose) message("  r=", r, ": hypervolume failed, skipping.")
         next
       }
-      
+
       hv_set <- hypervolume::hypervolume_set(
         hyp_pres_r, hyp_pa_r, check.memory = FALSE, verbose = FALSE
       )
       # get_volume() returns: [[1]] pres vol, [[2]] pa vol, [[3]] intersection
       ovrlp <- hypervolume::get_volume(hv_set)[[3L]]
-      
+
       # Range coverage: how much of the background PC range do the PAs cover?
       rel_cov_PC1 <- diff(range(pseudo_r$PC1)) / bg_range_PC1
       rel_cov_PC2 <- diff(range(pseudo_r$PC2)) / bg_range_PC2
-      
+
       # Proportion of pseudo-absences that fall on TRUE-absence cells.
       # Matches on rounded (x, y) geographic coordinates to avoid float issues.
       # This metric flags samplers that inadvertently draw from true-presence
@@ -589,7 +720,7 @@ virtualSpecies <- function(
       ta_key  <- paste(round(true_abs_r$x, 4L), round(true_abs_r$y, 4L))
       ps_key  <- paste(round(pseudo_r$x,   4L), round(pseudo_r$y,   4L))
       prop_ta <- mean(ps_key %in% ta_key)
-      
+
       metrics_list[[r]] <- data.frame(
         realization   = r,
         N_pres_total  = nrow(pres_r_all),
@@ -600,33 +731,33 @@ virtualSpecies <- function(
         rel_cov_PC2   = round(rel_cov_PC2, 4L),
         prop_true_abs = round(prop_ta, 4L)
       )
-      
+
       if (verbose)
         cat(sprintf("\r  [%s] realisation %d / %d — %d remaining   ",
                     s_name, r, n_realizations, n_realizations - r),
             sep = "")
     }  # end realisation loop
     if (verbose) cat("\n")   # move cursor past the \r counter
-    
+
     metrics_df <- do.call(rbind, Filter(Negate(is.null), metrics_list))
-    
+
     # -- Plots for this sampler -----------------------------------------------
-    
+
     # Proportion of reference PAs on true-absence cells (ref. realisation)
     ref_ta_key  <- paste(round(dt[ref_pa == 0L, "x"], 4L),
                          round(dt[ref_pa == 0L, "y"], 4L))
     pref_key    <- paste(round(pseudo_ref$x, 4L), round(pseudo_ref$y, 4L))
     prop_ta_ref <- round(mean(pref_key %in% ref_ta_key), 3L)
-    
+
     med_ovrlp <- if (!is.null(metrics_df) && nrow(metrics_df) > 0L)
       round(median(metrics_df$overlap, na.rm = TRUE), 3L)
     else NA_real_
-    
+
     annotation_txt <- paste0(
       "Overlap (median) = ", med_ovrlp,
       "\nProp. true abs. = ", prop_ta_ref
     )
-    
+
     p_pa <- ggplot() +
       geom_contour_filled(data = kde_df,
                           aes(x = PC1, y = PC2, z = density),
@@ -652,7 +783,7 @@ virtualSpecies <- function(
         x = pc1_lab, y = pc2_lab
       ) +
       theme_classic(base_size = 13)
-    
+
     # Marginal density bias plots (reference realisation)
     bias_df <- rbind(
       data.frame(PC1 = dt$PC1,         PC2 = dt$PC2,         group = "Background"),
@@ -667,7 +798,7 @@ virtualSpecies <- function(
                    Presences  = "firebrick")
     fill_vals <- c(Background = "grey70", "Pseudo-absences" = "darkorange",
                    Presences  = "firebrick")
-    
+
     p_bias_PC1 <- ggplot(bias_df, aes(x = PC1, colour = group, fill = group)) +
       geom_density(alpha = 0.25, linewidth = 0.8) +
       scale_colour_manual(values = col_vals) +
@@ -680,7 +811,7 @@ virtualSpecies <- function(
            x = pc1_lab, y = "Density", colour = NULL, fill = NULL) +
       theme_classic(base_size = 13) +
       theme(legend.position = "bottom")
-    
+
     p_bias_PC2 <- ggplot(bias_df, aes(x = PC2, colour = group, fill = group)) +
       geom_density(alpha = 0.25, linewidth = 0.8) +
       scale_colour_manual(values = col_vals) +
@@ -693,14 +824,14 @@ virtualSpecies <- function(
            x = pc2_lab, y = "Density", colour = NULL, fill = NULL) +
       theme_classic(base_size = 13) +
       theme(legend.position = "bottom")
-    
+
     # Three separate boxplots — one per metric group
     box_theme <- theme_classic(base_size = 13) +
       theme(legend.position = "none", axis.text.x = element_text(size = 11))
     sub_txt <- paste0(n_realizations, " Bernoulli realisations  [", s_name, "]")
-    
+
     if (!is.null(metrics_df) && nrow(metrics_df) > 0L) {
-      
+
       # -- Boxplot 1: hypervolume overlap -----------------------------------
       p_box_overlap <- ggplot(metrics_df,
                               aes(x = factor(0), y = overlap)) +
@@ -712,7 +843,7 @@ virtualSpecies <- function(
              x = NULL, y = "Overlap volume") +
         scale_x_discrete(labels = NULL) +
         box_theme
-      
+
       # -- Boxplot 2: PC range coverage -------------------------------------
       cov_long <- data.frame(
         value = c(metrics_df$rel_cov_PC1, metrics_df$rel_cov_PC2),
@@ -728,7 +859,7 @@ virtualSpecies <- function(
              subtitle = "Fraction of background PC range covered by pseudo-absences",
              x = NULL, y = "Relative coverage [0, 1]") +
         box_theme
-      
+
       # -- Boxplot 3: proportion true absences ------------------------------
       p_box_trueabs <- ggplot(metrics_df,
                               aes(x = factor(0), y = prop_true_abs)) +
@@ -741,7 +872,7 @@ virtualSpecies <- function(
              x = NULL, y = "Proportion [0, 1]") +
         scale_x_discrete(labels = NULL) +
         box_theme
-      
+
     } else {
       empty_p <- ggplot() +
         annotate("text", x = 0.5, y = 0.5,
@@ -751,13 +882,13 @@ virtualSpecies <- function(
       p_box_coverage <- empty_p
       p_box_trueabs  <- empty_p
     }
-    
+
     # Combined presence + PA dataset (reference realisation)
     pres_out      <- ref_pres[, c("x", "y", "PC1", "PC2", "suit")]
     pres_out$pa   <- 1L
     pseudo_out    <- pseudo_ref[, c("x", "y", "PC1", "PC2", "suit")]
     pseudo_out$pa <- 0L
-    
+
     sampler_results[[s_name]] <- list(
       pseudo_ref  = pseudo_ref,
       pseudo_vect = terra::vect(pseudo_ref, geom = c("x", "y"), crs = crs(envData)),
@@ -773,9 +904,9 @@ virtualSpecies <- function(
       )
     )
   }  # end sampler loop
-  
+
   # ── 8. RASTERS (reference realisation) ─────────────────────────────────────
-  
+
   suit_rast <- terra::rast(
     dt[, c("x", "y", "suit")],
     type = "xyz", crs = crs(envData)
@@ -784,9 +915,9 @@ virtualSpecies <- function(
     data.frame(x = dt$x, y = dt$y, pa = as.numeric(dt$pa)),
     type = "xyz", crs = crs(envData)
   )
-  
+
   # ── 9. RETURN ───────────────────────────────────────────────────────────────
-  
+
   list(
     # Niche definition and equations
     niche = list(
@@ -824,3 +955,4 @@ virtualSpecies <- function(
     background = dt
   )
 }
+

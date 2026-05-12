@@ -1,6 +1,9 @@
 # Reproducible example for virtualSpecies_fn.R
 
-setwd("/home/dared/GitHub/GaussNiche/")
+
+# Uncomment if the wd is not the repo. Leave commented in commits for transportability
+# setwd("/home/mat/Desktop/semesterarbeit10/GaussNiche/")
+
 library(terra)
 library(geodata)
 library(USE)
@@ -12,8 +15,8 @@ library(hypervolume)
 library(patchwork)
 library(sf)                          # needed by pa_uniform
 library(tictoc)
-source("/home/dared/GitHub/GaussNiche/virtualSpecies_fn.R")
- 
+source("virtualSpecies_fn.R")
+
 # 1. ENVIRONMENTAL DATA AND PCA ----
  envData <- rast(USE::Worldclim_tmp, type = "xyz")
 rpc     <- rastPCA(envData, stand = TRUE)
@@ -105,7 +108,8 @@ sp1 <- virtualSpecies(
   bgk_prev         = 1,
   pa_samplers      = list(
     random  = pa_random,
-    uniform = pa_uniform
+    uniform = pa_uniform,
+    mcmc    = pa_mcmc
   ),
   n_realizations   = 10,          # set to 10 for rapid exploration
   seed_base        = 42,
@@ -118,7 +122,10 @@ sp1 <- virtualSpecies(
   verbose          = TRUE,
   # extra args forwarded to pa_uniform:
   grid.res         = grid_res_opt,    # from section 3b
-  thres            = 0.75
+  thres            = 0.75,
+  # extra args forwarded to pa_mcmc:
+  chain.length     = 20000,
+  burnIn           = 1000
 )
 toc()
 
@@ -159,9 +166,16 @@ sp1$samplers$uniform$plots$p_box_overlap
 sp1$samplers$uniform$plots$p_box_coverage
 sp1$samplers$uniform$plots$p_box_trueabs
 
-# Side-by-side niche plots for both samplers
-sp1$samplers$random$plots$p_pa + sp1$samplers$uniform$plots$p_pa
- 
+## MCMC sampler----
+sp1$samplers$mcmc$plots$p_pa
+sp1$samplers$mcmc$plots$p_bias_PC1 + sp1$samplers$mcmc$plots$p_bias_PC2
+sp1$samplers$mcmc$plots$p_box_overlap
+sp1$samplers$mcmc$plots$p_box_coverage
+sp1$samplers$mcmc$plots$p_box_trueabs
+
+# Side-by-side niche plots across samplers
+sp1$samplers$random$plots$p_pa + sp1$samplers$uniform$plots$p_pa + sp1$samplers$mcmc$plots$p_pa
+
 # 9. INSPECT METRICS TABLES----
 # Summary statistics across 50 Bernoulli realisations — random sampler
 summary(sp1$samplers$random$metrics)
@@ -172,9 +186,11 @@ summary(sp1$samplers$uniform$metrics)
 # Combine both into a single data.frame for convenient comparison
 metrics_combined <- rbind(
   cbind(sampler = "random",  sp1$samplers$random$metrics),
-  cbind(sampler = "uniform", sp1$samplers$uniform$metrics)
+  cbind(sampler = "uniform", sp1$samplers$uniform$metrics),
+  cbind(sampler = "mcmc",    sp1$samplers$mcmc$metrics)
 )
-metrics_combined$sampler <- factor(metrics_combined$sampler)
+metrics_combined$sampler <- factor(metrics_combined$sampler,
+                                   levels = c("random", "uniform", "mcmc"))
 
 # Cross-sampler boxplot of overlap (ggplot2)
 ggplot(metrics_combined, aes(x = sampler, y = overlap, fill = sampler)) +
@@ -238,6 +254,11 @@ points(sp1$samplers$random$pseudo_vect, col = "steelblue", cex = 0.4, pch = 16)
 plot(sp1$suit_rast, col = hcl.colors(100, "YlOrRd", rev = TRUE),
      main = "Uniform pseudo-absences (geographic space)")
 points(sp1$samplers$uniform$pseudo_vect, col = "darkorange", cex = 0.4, pch = 16)
+
+# Geographic pseudo-absences: mcmc
+plot(sp1$suit_rast, col = hcl.colors(100, "YlOrRd", rev = TRUE),
+     main = "MCMC pseudo-absences (geographic space)")
+points(sp1$samplers$mcmc$pseudo_vect, col = "purple", cex = 0.4, pch = 16)
 
 plot(sp1$pa_rast,
      col  = c("grey85", "firebrick"),
