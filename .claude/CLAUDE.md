@@ -70,9 +70,19 @@ GaussNiche/
 │                                    pa_uniform()      sampler (USE::paSampling)
 │                                    pa_mcmc()         sampler (USE.MCMC::paSamplingMcmc)
 │                                    compute_bandwidth() one-time bg bandwidth
+│                                    sampler_effective_settings() resolves the
+│                                                      effective tunables (call
+│                                                      override vs sampler
+│                                                      default) per sampler
+│                                    summarize_parameters() one-page replication
+│                                                      record (niche / sampler /
+│                                                      run controls / env tables)
+│                                                      built from species
+│                                                      results' $parameters slot
 │                                    virtualSpecies()  main pipeline; returns
-│                                                      list(niche, suit_rast,
-│                                                      pa_rast, response_curves,
+│                                                      list(niche, parameters,
+│                                                      suit_rast, pa_rast,
+│                                                      response_curves,
 │                                                      samplers, plots, bw,
 │                                                      background)
 ├── 2_testing_wrapper_function.R   reproducible example exercising

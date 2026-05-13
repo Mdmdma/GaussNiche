@@ -321,6 +321,320 @@ compute_bandwidth <- function(dt) {
 
 
 # =============================================================================
+# HELPER — resolve the *effective* tunable settings for each sampler
+# =============================================================================
+
+#' Resolve each sampler's tunable parameters, with provenance.
+#'
+#' Reads each sampler function's `formals()`, drops the shared control-flow
+#' inputs (background / N_pa / pres / seed / env.rast), and for every
+#' remaining parameter returns the value the sampler actually ran with:
+#'   - if the caller supplied that name in `dot_args`, the call value is used
+#'     and source = "call"
+#'   - otherwise the formal's default is evaluated and source = "default"
+#'
+#' Used inside virtualSpecies() to build result$parameters$sampler_effective.
+#' Exposed at package level so a downstream report can re-render the same
+#' table without re-running the experiment.
+#'
+#' @param pa_samplers  Named list of sampler functions (as passed to
+#'                     virtualSpecies()).
+#' @param dot_args     List of arguments forwarded to every sampler via `...`.
+#' @return Named list, one entry per sampler. Each entry is a data.frame with
+#'         columns `parameter`, `value`, `source`. Samplers with no tunable
+#'         parameters return a 0-row data.frame of that shape.
+sampler_effective_settings <- function(pa_samplers, dot_args = list()) {
+  control_args <- c("background", "N_pa", "pres", "seed", "env.rast", "...")
+  empty <- data.frame(parameter = character(0), value = character(0),
+                      source = character(0), stringsAsFactors = FALSE)
+
+  lapply(pa_samplers, function(fn) {
+    f <- formals(fn)
+    f <- f[setdiff(names(f), control_args)]
+    if (length(f) == 0L) return(empty)
+
+    rows <- lapply(names(f), function(nm) {
+      if (nm %in% names(dot_args)) {
+        v <- dot_args[[nm]]
+        src <- "call"
+      } else {
+        default <- f[[nm]]
+        # No default at all — parameter is required but wasn't supplied. The
+        # sampler would have errored on use; record as <missing>.
+        if (identical(default, quote(expr = ))) {
+          v <- NA
+          src <- "missing"
+        } else {
+          v <- tryCatch(eval(default), error = function(e) deparse(default))
+          src <- "default"
+        }
+      }
+      data.frame(
+        parameter = nm,
+        value     = .fmt_scalar(v),
+        source    = src,
+        stringsAsFactors = FALSE
+      )
+    })
+    do.call(rbind, rows)
+  })
+}
+
+# Internal: render an arbitrary scalar / short-vector to a single-line string
+# so it fits in a table cell. NULL -> "NULL"; length-1 -> as.character; longer
+# -> "c(a, b, c)"-style; functions -> deparse first line.
+.fmt_scalar <- function(x) {
+  if (is.null(x)) return("NULL")
+  if (is.function(x)) return(deparse(x)[1L])
+  if (length(x) == 0L) return("")
+  if (length(x) == 1L) {
+    if (is.numeric(x)) return(format(x, trim = TRUE))
+    return(as.character(x))
+  }
+  paste0("c(", paste(vapply(x, .fmt_scalar, character(1)), collapse = ", "), ")")
+}
+
+
+# =============================================================================
+# REPORT HELPER — one-page parameter summary for replication
+# =============================================================================
+
+#' Build a one-page parameter-summary "page" for a multi-species experiment.
+#'
+#' Reads each species result's `$parameters` slot (populated by
+#' virtualSpecies()) and renders four tables on a single page sized for
+#' the 14×10 PDF idiom used by 4_multi_species_comparison.R:
+#'
+#'   1. Niche parameters (one row per species)
+#'   2. Sampler effective settings — long format: sampler / parameter /
+#'      value / source. "source" is "call" (set in the user's call) or
+#'      "default" (sampler's formal default).
+#'   3. Run controls — sample sizes, seeds, bandwidth, parallelism.
+#'   4. Environment / provenance — env layers, PC labels, PCA variance,
+#'      R / package versions, plus any free-form `extra` rows.
+#'
+#' The returned object is a patchwork composition. `print()` it inside an
+#' open PDF device to add the summary as a page.
+#'
+#' If the species disagree on a sampler setting, the value column is
+#' suffixed with "*" and a footnote is added below the table.
+#'
+#' @param species_results  Named list of virtualSpecies() return objects.
+#' @param species_catalogue Optional named list with `$label` per species
+#'                          (matches file 4's idiom). Falls back to
+#'                          species_results names if NULL.
+#' @param pca_var_exp      Optional numeric vector of PC variance fractions.
+#' @param extra            Optional named list of free-form key/value rows
+#'                          appended to the Environment / Provenance table
+#'                          (e.g. optimRes() settings, pdf_path).
+#' @return A patchwork object suitable for print().
+summarize_parameters <- function(species_results,
+                                 species_catalogue = NULL,
+                                 pca_var_exp = NULL,
+                                 extra = list()) {
+  if (!requireNamespace("gridExtra", quietly = TRUE))
+    stop("summarize_parameters() requires 'gridExtra'. ",
+         "Install with: install.packages('gridExtra')")
+  stopifnot(length(species_results) >= 1L)
+
+  # Pull $parameters from each species; bail clearly if any are missing.
+  params_list <- lapply(species_results, `[[`, "parameters")
+  if (any(vapply(params_list, is.null, logical(1))))
+    stop("summarize_parameters(): one or more species_results lack a ",
+         "$parameters slot. Re-run virtualSpecies() with the updated ",
+         "virtualSpecies_fn.R that records parameters.")
+
+  sp_names  <- names(species_results)
+  sp_labels <- if (!is.null(species_catalogue))
+    vapply(sp_names, function(nm) {
+      lab <- species_catalogue[[nm]]$label
+      if (is.null(lab)) nm else lab
+    }, character(1))
+  else sp_names
+
+  # ── Table 1: Niche parameters per species ────────────────────────────────
+  niche_tbl <- data.frame(
+    species    = sp_names,
+    label      = sp_labels,
+    mu_PC1     = vapply(params_list, function(p) p$mu[1L], numeric(1)),
+    mu_PC2     = vapply(params_list, function(p) p$mu[2L], numeric(1)),
+    sigma_PC1  = vapply(params_list, `[[`, numeric(1), "sigma_PC1"),
+    sigma_PC2  = vapply(params_list, `[[`, numeric(1), "sigma_PC2"),
+    rho        = vapply(params_list, `[[`, numeric(1), "rho"),
+    prevalence = vapply(species_results, function(sp)
+      round(mean(sp$background$pa), 4L), numeric(1)),
+    n_pres_ref = vapply(params_list, function(p) as.integer(p$n_pres_ref), integer(1)),
+    n_pa_ref   = vapply(params_list, function(p) as.integer(p$n_pa_ref),   integer(1)),
+    stringsAsFactors = FALSE,
+    row.names = NULL
+  )
+
+  # ── Table 2: Sampler effective settings (long, with provenance) ──────────
+  # Build the canonical settings table from species 1; check the others for
+  # divergence and asterisk any values that disagree.
+  base_eff <- params_list[[1L]]$sampler_effective
+  sampler_rows <- list()
+  diverged <- character(0)
+  for (s_nm in names(base_eff)) {
+    df <- base_eff[[s_nm]]
+    if (nrow(df) == 0L) {
+      sampler_rows[[length(sampler_rows) + 1L]] <- data.frame(
+        sampler = s_nm, parameter = "(none)", value = "-", source = "-",
+        stringsAsFactors = FALSE
+      )
+      next
+    }
+    # Check divergence across species.
+    for (i in seq_len(nrow(df))) {
+      pname <- df$parameter[i]
+      vals  <- vapply(params_list, function(p) {
+        eff <- p$sampler_effective[[s_nm]]
+        if (is.null(eff) || nrow(eff) == 0L) return(NA_character_)
+        row <- eff[eff$parameter == pname, , drop = FALSE]
+        if (nrow(row) == 0L) NA_character_ else row$value
+      }, character(1))
+      if (length(unique(vals[!is.na(vals)])) > 1L) {
+        df$value[i] <- paste0(df$value[i], "*")
+        diverged <- c(diverged, sprintf("%s/%s", s_nm, pname))
+      }
+    }
+    sampler_rows[[length(sampler_rows) + 1L]] <- cbind(
+      sampler = s_nm, df, stringsAsFactors = FALSE
+    )
+  }
+  sampler_tbl <- do.call(rbind, sampler_rows)
+
+  # ── Table 3: Run controls ────────────────────────────────────────────────
+  # Read from species 1; flag any disagreement for the keys that matter.
+  p1 <- params_list[[1L]]
+  run_keys <- c("n_realizations", "max_pres", "bgk_prev",
+                "seed_base", "seed_pseudo_base",
+                "n_background", "n_pres_total", "n_pres_ref", "n_pa_ref",
+                "bw_source", "parallel", "n_workers")
+  run_rows <- lapply(run_keys, function(k) {
+    vals <- vapply(params_list, function(p) .fmt_scalar(p[[k]]), character(1))
+    val <- vals[1L]
+    if (length(unique(vals)) > 1L) val <- paste0(val, "*")
+    data.frame(parameter = k, value = val, stringsAsFactors = FALSE)
+  })
+  run_rows[[length(run_rows) + 1L]] <- data.frame(
+    parameter = "bw (PC1, PC2)",
+    value     = paste(round(p1$bw, 5L), collapse = ", "),
+    stringsAsFactors = FALSE
+  )
+  run_tbl <- do.call(rbind, run_rows)
+
+  # ── Table 4: Environment / provenance ────────────────────────────────────
+  pca_str <- if (!is.null(pca_var_exp))
+    paste(sprintf("%s=%.1f%%",
+                  paste0("PC", seq_along(pca_var_exp)),
+                  pca_var_exp * 100), collapse = ", ")
+  else "(not provided)"
+
+  pkg_str <- paste(sprintf("%s %s",
+                           names(p1$pkg_versions),
+                           unlist(p1$pkg_versions)),
+                   collapse = ", ")
+
+  env_rows <- data.frame(
+    field = c("env layers",
+              "pa_env layers",
+              "PC1 label",
+              "PC2 label",
+              "PCA variance",
+              "R version",
+              "Packages",
+              "Timestamp"),
+    value = c(paste(p1$env_layer_names,    collapse = ", "),
+              paste(p1$pa_env_layer_names, collapse = ", "),
+              p1$pc1_lab,
+              p1$pc2_lab,
+              pca_str,
+              p1$r_version,
+              pkg_str,
+              format(p1$timestamp, "%Y-%m-%d %H:%M:%S %Z")),
+    stringsAsFactors = FALSE
+  )
+  if (length(extra) > 0L) {
+    extra_df <- data.frame(
+      field = names(extra),
+      value = vapply(extra, .fmt_scalar, character(1)),
+      stringsAsFactors = FALSE
+    )
+    env_rows <- rbind(env_rows, extra_df)
+  }
+
+  # ── Assemble page (two-column layout via gridExtra) ──────────────────────
+  # 14x10 inch landscape page: niche table is wide (10 cols), spans full
+  # width on top; sampler / run / env tables stack below in two columns so
+  # any number of sampler params and run-control rows fits in one page.
+  tt <- gridExtra::ttheme_minimal(
+    base_size = 8,
+    core    = list(fg_params = list(hjust = 0, x = 0.02)),
+    colhead = list(fg_params = list(hjust = 0, x = 0.02, fontface = "bold"))
+  )
+  g_niche   <- gridExtra::tableGrob(niche_tbl,   rows = NULL, theme = tt)
+  g_sampler <- gridExtra::tableGrob(sampler_tbl, rows = NULL, theme = tt)
+  g_run     <- gridExtra::tableGrob(run_tbl,     rows = NULL, theme = tt)
+  g_env     <- gridExtra::tableGrob(env_rows,    rows = NULL, theme = tt)
+
+  footnote <- if (length(diverged) > 0L)
+    paste0("* values differ across species: ",
+           paste(unique(diverged), collapse = "; "))
+  else NULL
+
+  mk_hdr <- function(txt, size = 11) grid::textGrob(
+    txt, x = 0.02, hjust = 0,
+    gp = grid::gpar(fontface = "bold", fontsize = size)
+  )
+
+  title_grob <- mk_hdr("GaussNiche run summary - replication record", 14)
+  sub_txt <- paste0("Species: ", length(sp_names),
+                    " | Samplers: ", paste(p1$sampler_names, collapse = ", "),
+                    if (!is.null(footnote)) paste0("\n", footnote) else "")
+  subtitle_grob <- grid::textGrob(sub_txt, x = 0.02, hjust = 0,
+                                  gp = grid::gpar(fontsize = 9))
+
+  # Heights in inches: ~0.2" for header row + ~0.20" per data row at base_size=8.
+  row_h <- function(n) 0.25 + 0.20 * n
+
+  left_col <- gridExtra::arrangeGrob(
+    mk_hdr("2. Sampler effective settings"), g_sampler,
+    ncol = 1,
+    heights = grid::unit(c(0.3, row_h(nrow(sampler_tbl))), "in")
+  )
+  right_col <- gridExtra::arrangeGrob(
+    mk_hdr("3. Run controls"), g_run,
+    mk_hdr("4. Environment & provenance"), g_env,
+    ncol = 1,
+    heights = grid::unit(
+      c(0.3, row_h(nrow(run_tbl)), 0.4, row_h(nrow(env_rows))), "in"
+    )
+  )
+  bottom <- gridExtra::arrangeGrob(
+    left_col, right_col, ncol = 2,
+    widths = grid::unit(c(0.45, 0.55), "npc")
+  )
+
+  page <- gridExtra::arrangeGrob(
+    title_grob, subtitle_grob,
+    mk_hdr("1. Niche parameters"), g_niche,
+    bottom,
+    ncol = 1,
+    heights = grid::unit(
+      c(0.4, 0.4, 0.3, row_h(nrow(niche_tbl)),
+        max(row_h(nrow(sampler_tbl)) + 0.3,
+            row_h(nrow(run_tbl)) + row_h(nrow(env_rows)) + 0.7)),
+      "in"
+    )
+  )
+
+  # Wrap so caller can print() on the active device.
+  patchwork::wrap_elements(page)
+}
+
+
+# =============================================================================
 # MAIN FUNCTION
 # =============================================================================
 
@@ -562,6 +876,7 @@ virtualSpecies <- function(
   # hypervolumes — regardless of species niche location or PA sampler — are
   # computed at the same KDE resolution. This is essential for comparability.
 
+  bw_source <- if (is.null(bw)) "computed" else "user-supplied"
   if (is.null(bw)) {
     if (verbose) cat("\nEstimating hypervolume bandwidth from background…\n")
     bw <- hypervolume::estimate_bandwidth(dt[, c("PC1", "PC2")])
@@ -1049,7 +1364,58 @@ virtualSpecies <- function(
     type = "xyz", crs = crs(envData)
   )
 
-  # ── 9. RETURN ───────────────────────────────────────────────────────────────
+  # ── 9. PARAMETERS (self-describing record for replication) ─────────────────
+  #
+  # Captured *after* the run so values are post-resolution (bw filled in,
+  # n_workers populated from detectCores() if auto, etc.). Everything needed
+  # to reproduce the experiment from this single slot, except the raw env
+  # raster and background data.frame (those live elsewhere in the return).
+
+  parameters <- list(
+    # Niche
+    mu               = mu,
+    sigma_PC1        = sigma_PC1,
+    sigma_PC2        = sigma_PC2,
+    rho              = rho,
+    # Sample sizes & realisation controls
+    bgk_prev         = bgk_prev,
+    n_realizations   = n_realizations,
+    max_pres         = max_pres,
+    seed_base        = seed_base,
+    seed_pseudo_base = seed_pseudo_base,
+    # Bandwidth provenance
+    bw               = bw,
+    bw_source        = bw_source,
+    # Sampler configuration (raw + effective)
+    sampler_names     = names(pa_samplers),
+    sampler_dots      = dot_args,
+    sampler_effective = sampler_effective_settings(pa_samplers, dot_args),
+    # Reference-realisation sample sizes (after max_pres cap)
+    n_background = nrow(dt),
+    n_pres_total = nrow(ref_pres_all),
+    n_pres_ref   = nrow(ref_pres),
+    n_pa_ref     = N_pa_ref,
+    # Environment provenance
+    env_layer_names    = names(envData),
+    pa_env_layer_names = names(pa_env_rast),
+    pc1_lab            = pc1_lab,
+    pc2_lab            = pc2_lab,
+    # Execution context
+    parallel  = parallel,
+    n_workers = if (parallel) n_workers else NA_integer_,
+    r_version = R.version.string,
+    pkg_versions = list(
+      USE.MCMC    = tryCatch(as.character(packageVersion("USE.MCMC")),
+                             error = function(e) NA_character_),
+      hypervolume = tryCatch(as.character(packageVersion("hypervolume")),
+                             error = function(e) NA_character_),
+      terra       = tryCatch(as.character(packageVersion("terra")),
+                             error = function(e) NA_character_)
+    ),
+    timestamp = Sys.time()
+  )
+
+  # ── 10. RETURN ──────────────────────────────────────────────────────────────
 
   list(
     # Niche definition and equations
@@ -1066,6 +1432,8 @@ virtualSpecies <- function(
         logit = eq_logit
       )
     ),
+    # Self-describing parameter record (see § 9)
+    parameters = parameters,
     # Suitability surface and Bernoulli presence layer (reference realisation)
     suit_rast = suit_rast,
     pa_rast   = pa_rast,

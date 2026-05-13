@@ -26,7 +26,7 @@ source("virtualSpecies_fn.R")
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. ENVIRONMENTAL DATA AND PCA
 # ──────────────────────────────────────────────────────────────────────────────
-envData <- rast(USE.MCMC::Worldclim_tmp, type = "xyz")
+envData <- rast(USE.MCMC::Worldclim_tem_a, type = "xyz")
 rpc     <- rastPCA(envData, stand = TRUE)
 
 dt <- na.omit(as.data.frame(rpc$PCs[[c("PC1", "PC2")]], xy = TRUE))
@@ -161,6 +161,25 @@ toc()
 
 sampler_names  <- names(shared_args$pa_samplers)
 species_labels <- vapply(species_catalogue, `[[`, character(1), "label")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6b. PARAMETER SUMMARY PAGE  (manifest for replication)
+#
+# Pulled from each species' $parameters slot so the numbers shown on the page
+# are exactly the ones virtualSpecies() ran with — defaults included.
+# ──────────────────────────────────────────────────────────────────────────────
+p_summary <- summarize_parameters(
+  species_results,
+  species_catalogue = species_catalogue,
+  pca_var_exp = var_exp,
+  extra = list(
+    grid_res_opt      = grid_res_opt,
+    optimRes_perc.thr = 20,
+    optimRes_cr       = 5,
+    pdf_path          = pdf_path
+  )
+)
+print(p_summary)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 7. AGGREGATE-PLOT HELPERS
