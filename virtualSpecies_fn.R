@@ -18,7 +18,7 @@ suppressPackageStartupMessages({
   library(hypervolume)
   library(patchwork)
   library(terra)
-  library(USE)
+  library(USE.MCMC)
 })
 
 # =============================================================================
@@ -97,7 +97,7 @@ pa_uniform <- function(background, N_pa, pres = NULL, seed = 123,
   n_tr_approx <- max(5L, ceiling(N_pa * 3L / max(grid.res^2L, 10L)))
 
   pa_result <- tryCatch(
-    USE::paSampling(
+    USE.MCMC::paSampling(
       env.rast  = env.rast,
       pres      = pres_sf,
       thres     = thres,
