@@ -4,7 +4,7 @@
 #   1. Marginal response curves + log-suitability / logit equations
 #   2. n_realizations Bernoulli draws for confidence intervals on metrics
 #   3. Pluggable pseudo-absence samplers stored in a list-of-lists
-#   4. Uniform-in-E-space sampler via USE::paSampling
+#   4. Uniform-in-E-space sampler via USE.MCMC::paSampling
 #   5. Proportion of pseudo-absences falling on true-absence cells
 #   6. hypervolume_gaussian with a fixed background bandwidth
 #
@@ -18,7 +18,7 @@ suppressPackageStartupMessages({
   library(hypervolume)
   library(patchwork)
   library(terra)
-  library(USE)
+  library(USE.MCMC)
 })
 
 # =============================================================================
@@ -52,7 +52,7 @@ pa_random <- function(background, N_pa, pres = NULL, seed = 123, ...) {
 #' @param pres        Presence rows from background (required)
 #' @param seed        RNG seed
 #' @param env.rast    SpatRaster of the ORIGINAL environmental variables (e.g.
-#'                    envData / WorldClim), NOT the PC rasters. USE::paSampling
+#'                    envData / WorldClim), NOT the PC rasters. USE.MCMC::paSampling
 #'                    always runs rastPCA() internally — if you feed it PC
 #'                    rasters, it re-runs PCA on already-orthogonal variables,
 #'                    producing a rotated E-space where the presence KDE filter
@@ -60,8 +60,8 @@ pa_random <- function(background, N_pa, pres = NULL, seed = 123, ...) {
 #'                    random sampling indistinguishable. Pass envData; the
 #'                    function retrieves our analysis PC1/PC2 values afterwards
 #'                    by joining on geographic coordinates.
-#' @param grid.res    Grid resolution for USE::paSampling (default 5).
-#'                    Pre-compute with USE::optimRes() and pass via '...'.
+#' @param grid.res    Grid resolution for USE.MCMC::paSampling (default 5).
+#'                    Pre-compute with USE.MCMC::optimRes() and pass via '...'.
 #' @param thres       Kernel-density threshold for excluding suitable cells
 #'                    (default 0.75; lower = more exclusion).
 #' @param ...         Ignored additional arguments (for interface compatibility)
@@ -97,7 +97,7 @@ pa_uniform <- function(background, N_pa, pres = NULL, seed = 123,
   n_tr_approx <- max(5L, ceiling(N_pa * 3L / max(grid.res^2L, 10L)))
 
   pa_result <- tryCatch(
-    USE::paSampling(
+    USE.MCMC::paSampling(
       env.rast  = env.rast,
       pres      = pres_sf,
       thres     = thres,
@@ -110,7 +110,7 @@ pa_uniform <- function(background, N_pa, pres = NULL, seed = 123,
       verbose   = FALSE
     ),
     error = function(e) {
-      warning("USE::paSampling failed ('", conditionMessage(e),
+      warning("USE.MCMC::paSampling failed ('", conditionMessage(e),
               "'). Falling back to pa_random.")
       NULL
     }
@@ -356,7 +356,7 @@ compute_bandwidth <- function(dt) {
 #'                         fixed across multiple species.
 #' @param pa_env_rast      SpatRaster forwarded to samplers as env.rast.
 #'                         Must be the ORIGINAL environmental raster (envData),
-#'                         NOT rpc$PCs. USE::paSampling always calls rastPCA()
+#'                         NOT rpc$PCs. USE.MCMC::paSampling always calls rastPCA()
 #'                         internally; feeding it PC rasters re-rotates the E-space
 #'                         and breaks the presence-exclusion filter, making
 #'                         pa_uniform indistinguishable from pa_random.

@@ -5,8 +5,8 @@
 setwd("/home/mat/Desktop/semesterarbeit10/GaussNiche/")
 
 library(terra)
-library(geodata)
-library(USE)
+# library(geodata)
+library(USE.MCMC)
 library(mvtnorm)
 library(MASS)
 library(ggplot2)
@@ -19,8 +19,8 @@ library(future)                      # parallel backend
 library(furrr)                       # furrr::future_pmap dispatch
 source("virtualSpecies_fn.R")
 
-# 1. ENVIRONMENTAL DATA AND PCA ----
- envData <- rast(USE::Worldclim_tmp, type = "xyz")
+#1. ENVIRONMENTAL DATA AND PCA ----
+ envData <- rast(USE.MCMC::Worldclim_tmp, type = "xyz")
 rpc     <- rastPCA(envData, stand = TRUE)
 
 # Full background: every non-NA cell projected into PC space
@@ -70,7 +70,7 @@ cat("Background bandwidth (PC1, PC2):", round(bw_background, 5), "\n")
 #     optimRes needs the background projected into PC space as an sf object
 #     (using USE's internal PC axes, which it derives from envData).
 dt_sf  <- sf::st_as_sf(dt, coords = c("PC1", "PC2"))
-res_opt <- USE::optimRes(
+res_opt <- USE.MCMC::optimRes(
   sdf      = dt_sf,
   grid.res = 1:10,
   perc.thr = 20,
