@@ -2,7 +2,7 @@
 
 
 # Uncomment if the wd is not the repo. Leave commented in commits for transportability
-# setwd("/home/mat/Desktop/semesterarbeit10/GaussNiche/")
+setwd("/home/mat/Desktop/semesterarbeit10/GaussNiche/")
 
 library(terra)
 library(geodata)
@@ -15,6 +15,8 @@ library(hypervolume)
 library(patchwork)
 library(sf)                          # needed by pa_uniform
 library(tictoc)
+library(future)                      # parallel backend
+library(furrr)                       # furrr::future_pmap dispatch
 source("virtualSpecies_fn.R")
 
 # 1. ENVIRONMENTAL DATA AND PCA ----
@@ -120,12 +122,15 @@ sp1 <- virtualSpecies(
   bw               = bw_background,   # fixed bandwidth from section 3a
   pa_env_rast      = envData,          # MUST be original vars, NOT rpc$PCs
   verbose          = TRUE,
+  parallel         = TRUE,           # dispatch (sampler, realisation) tasks
+  n_workers        = NULL,           # NULL -> detectCores() - 1
   # extra args forwarded to pa_uniform:
   grid.res         = grid_res_opt,    # from section 3b
   thres            = 0.75,
   # extra args forwarded to pa_mcmc:
   chain.length     = 20000,
-  burnIn           = 1000
+  burnIn           = 1000,
+  species.cutoff.threshold = 0.1   # USE.MCMC species GMM percentile
 )
 toc()
 
@@ -177,48 +182,57 @@ sp1$samplers$mcmc$plots$p_box_trueabs
 sp1$samplers$random$plots$p_pa + sp1$samplers$uniform$plots$p_pa + sp1$samplers$mcmc$plots$p_pa
 
 # 9. INSPECT METRICS TABLES----
+# Per-sampler task status tally — spot samplers that returned no successful
+# realisations (skip_few_pres / skip_sampler_null_or_short / skip_hv_fail).
+sapply(sp1$samplers, function(s) table(s$metrics$status))
+
 # Summary statistics across 50 Bernoulli realisations — random sampler
 summary(sp1$samplers$random$metrics)
 
 # Summary — uniform sampler
 summary(sp1$samplers$uniform$metrics)
 
-# Combine both into a single data.frame for convenient comparison
-metrics_combined <- rbind(
-  cbind(sampler = "random",  sp1$samplers$random$metrics),
-  cbind(sampler = "uniform", sp1$samplers$uniform$metrics),
-  cbind(sampler = "mcmc",    sp1$samplers$mcmc$metrics)
-)
+# rbind is shape-safe now: every metrics table has the same columns, including
+# rows tagged with status = "skip_*" for realisations that were abandoned.
+metrics_combined <- do.call(rbind, lapply(names(sp1$samplers), function(nm) {
+  cbind(sampler = nm, sp1$samplers[[nm]]$metrics)
+}))
 metrics_combined$sampler <- factor(metrics_combined$sampler,
-                                   levels = c("random", "uniform", "mcmc"))
+                                   levels = names(sp1$samplers))
+
+# Only successful realisations contribute to cross-sampler comparisons.
+metrics_ok <- subset(metrics_combined, status == "ok")
 
 # Cross-sampler boxplot of overlap (ggplot2)
-ggplot(metrics_combined, aes(x = sampler, y = overlap, fill = sampler)) +
+ggplot(metrics_ok, aes(x = sampler, y = overlap, fill = sampler)) +
   geom_boxplot(alpha = 0.7, width = 0.45, outlier.shape = 21) +
   geom_jitter(width = 0.1, alpha = 0.4, size = 0.9) +
   scale_fill_brewer(palette = "Set1") +
+  scale_x_discrete(drop = FALSE) +
   labs(title    = "Hypervolume overlap across samplers",
-       subtitle = paste0(nrow(sp1$samplers$random$metrics),
-                         " Bernoulli realisations per sampler"),
+       subtitle = paste0(sum(sp1$samplers$random$metrics$status == "ok"),
+                         " successful Bernoulli realisations (random sampler)"),
        x = NULL, y = "Overlap (intersection volume)") +
   theme_classic(base_size = 13) +
   theme(legend.position = "none")
 
 # Cross-sampler comparison of ranges
-ggplot(metrics_combined, aes(x = sampler, y = rel_cov_PC1, fill = sampler)) +
+ggplot(metrics_ok, aes(x = sampler, y = rel_cov_PC1, fill = sampler)) +
   geom_boxplot(alpha = 0.7, width = 0.45, outlier.shape = 21) +
   geom_jitter(width = 0.1, alpha = 0.4, size = 0.9) +
   scale_fill_brewer(palette = "Set1") +
+  scale_x_discrete(drop = FALSE) +
   # labs(title    = "Proportion of pseudo-absences on true-absence cells",
        # subtitle = "Higher = sampler avoids true-presence cells more effectively",
        # x = NULL, y = "coverage PC1") +
   theme_classic(base_size = 13) +
   theme(legend.position = "none")
 
-ggplot(metrics_combined, aes(x = sampler, y = rel_cov_PC2, fill = sampler)) +
+ggplot(metrics_ok, aes(x = sampler, y = rel_cov_PC2, fill = sampler)) +
   geom_boxplot(alpha = 0.7, width = 0.45, outlier.shape = 21) +
   geom_jitter(width = 0.1, alpha = 0.4, size = 0.9) +
   scale_fill_brewer(palette = "Set1") +
+  scale_x_discrete(drop = FALSE) +
   # labs(title    = "Proportion of pseudo-absences on true-absence cells",
   # subtitle = "Higher = sampler avoids true-presence cells more effectively",
   # x = NULL, y = "coverage PC1") +
@@ -226,10 +240,11 @@ ggplot(metrics_combined, aes(x = sampler, y = rel_cov_PC2, fill = sampler)) +
   theme(legend.position = "none")
 
 # Cross-sampler comparison of prop_true_abs
-ggplot(metrics_combined, aes(x = sampler, y = prop_true_abs, fill = sampler)) +
+ggplot(metrics_ok, aes(x = sampler, y = prop_true_abs, fill = sampler)) +
   geom_boxplot(alpha = 0.7, width = 0.45, outlier.shape = 21) +
   geom_jitter(width = 0.1, alpha = 0.4, size = 0.9) +
   scale_fill_brewer(palette = "Set1") +
+  scale_x_discrete(drop = FALSE) +
   labs(title    = "Proportion of pseudo-absences on true-absence cells",
        subtitle = "Higher = sampler avoids true-presence cells more effectively",
        x = NULL, y = "Proportion") +

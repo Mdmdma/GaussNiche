@@ -190,6 +190,10 @@ pa_uniform <- function(background, N_pa, pres = NULL, seed = 123,
 #' @param num.cores    Cores for multi-chain parallelism (default 1)
 #' @param engine       "auto" (default), "R", or "cpp". Leave "auto" unless
 #'                     forcing the reference loop for comparison runs.
+#' @param species.cutoff.threshold
+#'                     Percentile of the species-presence GMM density used to
+#'                     define the region the chain may visit. Forwarded to
+#'                     USE.MCMC::paSamplingMcmc(); package default is 0.95.
 #' @param ...          Ignored additional arguments (interface compatibility,
 #'                     swallows pa_uniform's grid.res / thres)
 pa_mcmc <- function(background, N_pa, pres = NULL, seed = 123,
@@ -197,7 +201,8 @@ pa_mcmc <- function(background, N_pa, pres = NULL, seed = 123,
                     chain.length = 10000,
                     burnIn = 1000,
                     num.chains = 1, num.cores = 1,
-                    engine = "auto", ...) {
+                    engine = "auto",
+                    species.cutoff.threshold = 0.95, ...) {
 
   if (!requireNamespace("USE.MCMC", quietly = TRUE))
     stop("Package 'USE.MCMC' is required for pa_mcmc. ",
@@ -236,6 +241,7 @@ pa_mcmc <- function(background, N_pa, pres = NULL, seed = 123,
       num.cores       = num.cores,
       seed.number     = seed,
       engine          = engine,
+      species.cutoff.threshold = species.cutoff.threshold,
       verbose         = FALSE,
       plot_proc       = FALSE
     ),
@@ -355,6 +361,16 @@ compute_bandwidth <- function(dt) {
 #'                         and breaks the presence-exclusion filter, making
 #'                         pa_uniform indistinguishable from pa_random.
 #' @param verbose          Print progress messages
+#' @param parallel         If TRUE, dispatch (sampler, realisation) tasks over
+#'                         a future::multisession worker pool. Each task is
+#'                         independent and assigned dynamically, so workers
+#'                         pick up new tasks as they free up. Requires
+#'                         'future' and 'furrr'. Default FALSE.
+#' @param n_workers        Number of parallel workers when parallel = TRUE.
+#'                         NULL (default) -> parallel::detectCores() - 1, so
+#'                         one core stays free for system responsiveness.
+#'                         When parallel = TRUE, pa_mcmc's num.cores is forced
+#'                         to 1 inside each worker to avoid oversubscription.
 #' @param ...              Extra arguments forwarded to every sampler
 #'                         (e.g. grid.res = 5, thres = 0.75 for pa_uniform)
 #'
@@ -378,11 +394,31 @@ virtualSpecies <- function(
     bw               = NULL,
     pa_env_rast      = NULL,
     verbose          = TRUE,
+    parallel         = FALSE,
+    n_workers        = NULL,
     ...
 ) {
 
   # Default the PA environment raster to envData if not supplied
   if (is.null(pa_env_rast)) pa_env_rast <- envData
+
+  # ── 0. PARALLEL BACKEND ────────────────────────────────────────────────────
+  #
+  # plan(multisession) so the same code path works on Linux, macOS and Windows
+  # (multicore/fork is silently downgraded on Windows and inside RStudio).
+  # on.exit restores the previous plan even if a sampler errors out.
+  if (parallel) {
+    if (!requireNamespace("future", quietly = TRUE) ||
+        !requireNamespace("furrr",  quietly = TRUE))
+      stop("parallel = TRUE requires packages 'future' and 'furrr'. ",
+           "Install with: install.packages(c('future', 'furrr'))")
+    if (is.null(n_workers))
+      #n_workers <- max(1L, parallel::detectCores() - 1L)
+      n_workers <- 4
+    old_plan <- future::plan(future::multisession, workers = n_workers)
+    on.exit(future::plan(old_plan), add = TRUE)
+    if (verbose) cat("Parallel mode: ", n_workers, " workers\n", sep = "")
+  }
 
   # ── 1. BIVARIATE GAUSSIAN NICHE ────────────────────────────────────────────
 
@@ -613,133 +649,230 @@ virtualSpecies <- function(
   sampler_results <- vector("list", length(pa_samplers))
   names(sampler_results) <- names(pa_samplers)
 
-  for (s_name in names(pa_samplers)) {
-
-    sampler  <- pa_samplers[[s_name]]
+  # ── Reference pseudo-absences (realisation 1) for diagnostic plots ─────────
+  # One call per sampler, run sequentially before dispatch — cheap, and the
+  # sequential path lets a failure on the reference realisation halt early.
+  N_pa_ref    <- max(1L, round(nrow(ref_pres) / bgk_prev))
+  dot_args    <- list(...)
+  pseudo_refs <- lapply(names(pa_samplers), function(s_name) {
     if (verbose) cat("\n══ Sampler:", s_name, "══\n")
-
-    # -- Reference pseudo-absences for diagnostic plots (realisation 1) ------
-    N_pa_ref   <- max(1L, round(nrow(ref_pres) / bgk_prev))
-    pseudo_ref <- tryCatch(
-      sampler(
-        background = dt, N_pa = N_pa_ref, pres = ref_pres,
-        seed = seed_pseudo_base, env.rast = pa_env_rast, ...
-      ),
+    sampler <- pa_samplers[[s_name]]
+    tryCatch(
+      do.call(sampler, c(
+        list(background = dt, N_pa = N_pa_ref, pres = ref_pres,
+             seed = seed_pseudo_base, env.rast = pa_env_rast),
+        dot_args
+      )),
       error = function(e) {
         stop("Sampler '", s_name, "' failed on reference realisation: ", e$message)
       }
     )
+  })
+  names(pseudo_refs) <- names(pa_samplers)
 
-    # -- Metrics loop across all n_realizations --------------------------------
-    #
-    # NOTE ON PERFORMANCE: each iteration calls hypervolume_gaussian() twice
-    # (presences + pseudo-absences). Presences are capped at max_pres (default
-    # 500) so N_pa is also capped at max_pres / bgk_prev. This keeps each
-    # hypervolume call fast regardless of species prevalence.
+  # Pack the SpatRaster for multisession transport. SpatRaster is an Rcpp
+  # external pointer that does NOT survive R's serialize/unserialize, so
+  # without wrap() each worker would receive a SpatRaster with a null C++
+  # pointer — terra::crs(env.rast) inside pa_uniform / pa_mcmc would error,
+  # the outer tryCatch would swallow it, and every parallel realisation
+  # would be mis-tagged "skip_sampler_null_or_short".
+  pa_env_rast_packed <- if (parallel) terra::wrap(pa_env_rast) else NULL
 
-    metrics_list <- vector("list", n_realizations)
+  # Skip-row constructor: every realisation returns a row of the same shape so
+  # downstream rbind never sees mismatched columns. status = "ok" rows carry
+  # real metrics; status = "skip_*" rows carry NAs and the reason the
+  # realisation was abandoned. Letting empty samplers produce 0-row metric
+  # tables (or NULL) is what triggered the rbind error in the testing wrapper.
+  .skip_row <- function(r, status,
+                        N_pres_total = NA_integer_,
+                        N_pres_used  = NA_integer_) {
+    data.frame(
+      realization   = r,
+      status        = status,
+      N_pres_total  = N_pres_total,
+      N_pres_used   = N_pres_used,
+      N_pseudo      = NA_integer_,
+      overlap       = NA_real_,
+      rel_cov_PC1   = NA_real_,
+      rel_cov_PC2   = NA_real_,
+      prop_true_abs = NA_real_,
+      stringsAsFactors = FALSE
+    )
+  }
 
-    for (r in seq_len(n_realizations)) {
+  # ── Closure: evaluate one (sampler, realisation) task ──────────────────────
+  #
+  # Always returns a one-row data.frame with the same columns (see .skip_row).
+  # status == "ok" rows have real metrics; status == "skip_*" rows have NAs
+  # and a reason code, so aggregations never see NULL. The closure captures
+  # dt, pa_matrix, bw, pa_env_rast, bgk_prev, max_pres, seeds, bg ranges,
+  # pa_samplers and dot_args. RNG: each task calls set.seed(seed_base + r)
+  # explicitly, so output is deterministic regardless of execution order
+  # (furrr's L'Ecuyer seed is overridden by these calls).
+  eval_realization <- function(s_name, r) {
+    # Pin RNG kind so results match between sequential and parallel runs.
+    # furrr_options(seed = TRUE) switches workers to L'Ecuyer-CMRG; without
+    # this reset, set.seed(seed_base + r) would seed a different RNG inside
+    # workers than in the main session and produce different sample() output.
+    RNGkind("Mersenne-Twister")
 
-      pa_r         <- pa_matrix[, r]
-      pres_r_all   <- dt[pa_r == 1L, ]   # full draw — used for prop_true_abs
-      true_abs_r   <- dt[pa_r == 0L, ]
+    sampler    <- pa_samplers[[s_name]]
+    pa_r       <- pa_matrix[, r]
+    pres_r_all <- dt[pa_r == 1L, ]   # full draw — used for prop_true_abs
+    true_abs_r <- dt[pa_r == 0L, ]
 
-      # Subsample presences to max_pres to cap hypervolume runtime.
-      # N_pa is derived from the subsampled count so the PA:presence
-      # ratio (bgk_prev) is consistent across all realisations.
-      set.seed(seed_base + r)
-      pres_r <- if (nrow(pres_r_all) > max_pres)
-        pres_r_all[sample(nrow(pres_r_all), max_pres), ]
-      else pres_r_all
+    # Subsample presences to max_pres to cap hypervolume runtime. N_pa is
+    # derived from the subsampled count so PA:presence ratio (bgk_prev)
+    # stays consistent across realisations.
+    set.seed(seed_base + r)
+    pres_r <- if (nrow(pres_r_all) > max_pres)
+      pres_r_all[sample(nrow(pres_r_all), max_pres), ]
+    else pres_r_all
 
-      N_pa_r <- max(1L, round(nrow(pres_r) / bgk_prev))
+    N_pa_r <- max(1L, round(nrow(pres_r) / bgk_prev))
+    if (nrow(pres_r) < 5L || N_pa_r < 5L)
+      return(.skip_row(r, "skip_few_pres",
+                       N_pres_total = nrow(pres_r_all),
+                       N_pres_used  = nrow(pres_r)))
 
-      if (nrow(pres_r) < 5L || N_pa_r < 5L) {
-        if (verbose) message("  r=", r, ": too few points, skipping.")
-        next
-      }
+    # Under outer parallelism, force pa_mcmc to single-threaded so N workers
+    # don't each spawn M chains and oversubscribe the CPU.
+    task_dot_args <- dot_args
+    if (parallel && s_name == "mcmc") task_dot_args$num.cores <- 1L
 
-      pseudo_r <- tryCatch(
-        sampler(
-          background = dt, N_pa = N_pa_r, pres = pres_r,
-          seed = seed_pseudo_base + r, env.rast = pa_env_rast, ...
-        ),
-        error = function(e) {
-          warning("Sampler '", s_name, "' failed at r=", r, ": ", e$message)
-          NULL
-        }
-      )
-      if (is.null(pseudo_r) || nrow(pseudo_r) < 5L) next
+    # Unwrap the packed SpatRaster to a live one inside the worker. In
+    # sequential mode pa_env_rast_packed is NULL and we use pa_env_rast as-is.
+    env_rast_for_task <- if (parallel) terra::unwrap(pa_env_rast_packed) else pa_env_rast
 
-      # Hypervolume — Gaussian KDE with fixed background bandwidth
-      hyp_pres_r <- tryCatch(
-        hypervolume::hypervolume_gaussian(
-          data                    = pres_r[, c("PC1", "PC2")],
-          kde.bandwidth           = bw,
-          sd.count                = 3,
-          quantile.requested      = 0.95,     # use 0.99 if following Enrico
-          quantile.requested.type = "probability",
-          chunk.size              = 1000L,
-          verbose                 = FALSE
-        ),
-        error = function(e) NULL
-      )
-      hyp_pa_r <- tryCatch(
-        hypervolume::hypervolume_gaussian(
-          data                    = pseudo_r[, c("PC1", "PC2")],
-          kde.bandwidth           = bw,
-          sd.count                = 3,
-          quantile.requested      = 0.95,
-          quantile.requested.type = "probability",
-          chunk.size              = 1000L,
-          verbose                 = FALSE
-        ),
-        error = function(e) NULL
-      )
+    pseudo_r <- tryCatch(
+      do.call(sampler, c(
+        list(background = dt, N_pa = N_pa_r, pres = pres_r,
+             seed = seed_pseudo_base + r, env.rast = env_rast_for_task),
+        task_dot_args
+      )),
+      error = function(e) NULL
+    )
+    if (is.null(pseudo_r) || nrow(pseudo_r) < 5L)
+      return(.skip_row(r, "skip_sampler_null_or_short",
+                       N_pres_total = nrow(pres_r_all),
+                       N_pres_used  = nrow(pres_r)))
 
-      if (is.null(hyp_pres_r) || is.null(hyp_pa_r)) {
-        if (verbose) message("  r=", r, ": hypervolume failed, skipping.")
-        next
-      }
+    # Hypervolume — Gaussian KDE with fixed background bandwidth
+    hyp_pres_r <- tryCatch(
+      hypervolume::hypervolume_gaussian(
+        data                    = pres_r[, c("PC1", "PC2")],
+        kde.bandwidth           = bw,
+        sd.count                = 3,
+        quantile.requested      = 0.95,     # use 0.99 if following Enrico
+        quantile.requested.type = "probability",
+        chunk.size              = 1000L,
+        verbose                 = FALSE
+      ),
+      error = function(e) NULL
+    )
+    hyp_pa_r <- tryCatch(
+      hypervolume::hypervolume_gaussian(
+        data                    = pseudo_r[, c("PC1", "PC2")],
+        kde.bandwidth           = bw,
+        sd.count                = 3,
+        quantile.requested      = 0.95,
+        quantile.requested.type = "probability",
+        chunk.size              = 1000L,
+        verbose                 = FALSE
+      ),
+      error = function(e) NULL
+    )
+    if (is.null(hyp_pres_r) || is.null(hyp_pa_r))
+      return(.skip_row(r, "skip_hv_fail",
+                       N_pres_total = nrow(pres_r_all),
+                       N_pres_used  = nrow(pres_r)))
 
-      hv_set <- hypervolume::hypervolume_set(
-        hyp_pres_r, hyp_pa_r, check.memory = FALSE, verbose = FALSE
-      )
-      # get_volume() returns: [[1]] pres vol, [[2]] pa vol, [[3]] intersection
-      ovrlp <- hypervolume::get_volume(hv_set)[[3L]]
+    hv_set <- hypervolume::hypervolume_set(
+      hyp_pres_r, hyp_pa_r, check.memory = FALSE, verbose = FALSE
+    )
+    # get_volume() returns: [[1]] pres vol, [[2]] pa vol, [[3]] intersection
+    ovrlp <- hypervolume::get_volume(hv_set)[[3L]]
 
-      # Range coverage: how much of the background PC range do the PAs cover?
-      rel_cov_PC1 <- diff(range(pseudo_r$PC1)) / bg_range_PC1
-      rel_cov_PC2 <- diff(range(pseudo_r$PC2)) / bg_range_PC2
+    rel_cov_PC1 <- diff(range(pseudo_r$PC1)) / bg_range_PC1
+    rel_cov_PC2 <- diff(range(pseudo_r$PC2)) / bg_range_PC2
 
-      # Proportion of pseudo-absences that fall on TRUE-absence cells.
-      # Matches on rounded (x, y) geographic coordinates to avoid float issues.
-      # This metric flags samplers that inadvertently draw from true-presence
-      # cells, which would inflate observed class overlap.
-      ta_key  <- paste(round(true_abs_r$x, 4L), round(true_abs_r$y, 4L))
-      ps_key  <- paste(round(pseudo_r$x,   4L), round(pseudo_r$y,   4L))
-      prop_ta <- mean(ps_key %in% ta_key)
+    # Proportion of pseudo-absences on TRUE-absence cells. Flags samplers
+    # that draw from true-presence cells, inflating observed class overlap.
+    ta_key  <- paste(round(true_abs_r$x, 4L), round(true_abs_r$y, 4L))
+    ps_key  <- paste(round(pseudo_r$x,   4L), round(pseudo_r$y,   4L))
+    prop_ta <- mean(ps_key %in% ta_key)
 
-      metrics_list[[r]] <- data.frame(
-        realization   = r,
-        N_pres_total  = nrow(pres_r_all),
-        N_pres_used   = nrow(pres_r),
-        N_pseudo      = nrow(pseudo_r),
-        overlap       = round(ovrlp, 6L),
-        rel_cov_PC1   = round(rel_cov_PC1, 4L),
-        rel_cov_PC2   = round(rel_cov_PC2, 4L),
-        prop_true_abs = round(prop_ta, 4L)
-      )
+    metrics_row <- data.frame(
+      realization   = r,
+      status        = "ok",
+      N_pres_total  = nrow(pres_r_all),
+      N_pres_used   = nrow(pres_r),
+      N_pseudo      = nrow(pseudo_r),
+      overlap       = round(ovrlp, 6L),
+      rel_cov_PC1   = round(rel_cov_PC1, 4L),
+      rel_cov_PC2   = round(rel_cov_PC2, 4L),
+      prop_true_abs = round(prop_ta, 4L),
+      stringsAsFactors = FALSE
+    )
 
-      if (verbose)
-        cat(sprintf("\r  [%s] realisation %d / %d — %d remaining   ",
-                    s_name, r, n_realizations, n_realizations - r),
-            sep = "")
-    }  # end realisation loop
-    if (verbose) cat("\n")   # move cursor past the \r counter
+    # Force release of hypervolume / KDE working memory before returning.
+    # Persistent multisession workers run several tasks back-to-back and R's
+    # GC is lazy — without this, HV objects (100-500 MB each) drift up the
+    # high-water mark per worker until RStudio OOMs. metrics_row holds no
+    # references to anything below.
+    rm(hyp_pres_r, hyp_pa_r, hv_set,
+       pseudo_r, pres_r, pres_r_all, true_abs_r,
+       ta_key, ps_key)
+    gc(verbose = FALSE)
 
-    metrics_df <- do.call(rbind, Filter(Negate(is.null), metrics_list))
+    metrics_row
+  }
+
+  # ── Flat task list: every (sampler, realisation) pair ──────────────────────
+  tasks <- expand.grid(
+    s_name = names(pa_samplers),
+    r      = seq_len(n_realizations),
+    stringsAsFactors = FALSE,
+    KEEP.OUT.ATTRS   = FALSE
+  )
+
+  if (verbose)
+    cat("\nEvaluating ", nrow(tasks), " tasks (",
+        length(pa_samplers), " samplers x ", n_realizations,
+        " realisations)…\n", sep = "")
+
+  if (parallel) {
+    results <- furrr::future_pmap(
+      tasks, eval_realization,
+      .options  = furrr::furrr_options(seed = TRUE, globals = TRUE),
+      .progress = verbose
+    )
+  } else {
+    results <- Map(eval_realization, tasks$s_name, tasks$r)
+  }
+
+  # Group results by sampler in the original sampler order
+  results_by_sampler <- split(results, factor(tasks$s_name,
+                                              levels = names(pa_samplers)))
+
+  for (s_name in names(pa_samplers)) {
+
+    pseudo_ref   <- pseudo_refs[[s_name]]
+    metrics_list <- results_by_sampler[[s_name]]
+    # Every task now returns a one-row data.frame (status = "ok" or "skip_*"),
+    # so no Filter() / NULL handling is needed. rbind is shape-safe.
+    metrics_df <- do.call(rbind, metrics_list)
+    if (verbose) {
+      tally <- table(factor(metrics_df$status,
+                            levels = c("ok", "skip_few_pres",
+                                       "skip_sampler_null_or_short",
+                                       "skip_hv_fail")))
+      cat(sprintf("  [%s] %s\n", s_name,
+                  paste(sprintf("%s=%d", names(tally), as.integer(tally)),
+                        collapse = "  ")))
+    }
+    # Plots / median etc. operate only on successful realisations.
+    metrics_ok <- metrics_df[metrics_df$status == "ok", , drop = FALSE]
 
     # -- Plots for this sampler -----------------------------------------------
 
@@ -749,8 +882,8 @@ virtualSpecies <- function(
     pref_key    <- paste(round(pseudo_ref$x, 4L), round(pseudo_ref$y, 4L))
     prop_ta_ref <- round(mean(pref_key %in% ref_ta_key), 3L)
 
-    med_ovrlp <- if (!is.null(metrics_df) && nrow(metrics_df) > 0L)
-      round(median(metrics_df$overlap, na.rm = TRUE), 3L)
+    med_ovrlp <- if (nrow(metrics_ok) > 0L)
+      round(median(metrics_ok$overlap, na.rm = TRUE), 3L)
     else NA_real_
 
     annotation_txt <- paste0(
@@ -830,10 +963,10 @@ virtualSpecies <- function(
       theme(legend.position = "none", axis.text.x = element_text(size = 11))
     sub_txt <- paste0(n_realizations, " Bernoulli realisations  [", s_name, "]")
 
-    if (!is.null(metrics_df) && nrow(metrics_df) > 0L) {
+    if (nrow(metrics_ok) > 0L) {
 
       # -- Boxplot 1: hypervolume overlap -----------------------------------
-      p_box_overlap <- ggplot(metrics_df,
+      p_box_overlap <- ggplot(metrics_ok,
                               aes(x = factor(0), y = overlap)) +
         geom_boxplot(fill = "#66C2A5", alpha = 0.7,
                      outlier.shape = 21, outlier.size = 1.5, width = 0.4) +
@@ -846,8 +979,8 @@ virtualSpecies <- function(
 
       # -- Boxplot 2: PC range coverage -------------------------------------
       cov_long <- data.frame(
-        value = c(metrics_df$rel_cov_PC1, metrics_df$rel_cov_PC2),
-        axis  = rep(c("PC1", "PC2"), each = nrow(metrics_df))
+        value = c(metrics_ok$rel_cov_PC1, metrics_ok$rel_cov_PC2),
+        axis  = rep(c("PC1", "PC2"), each = nrow(metrics_ok))
       )
       p_box_coverage <- ggplot(cov_long, aes(x = axis, y = value, fill = axis)) +
         geom_boxplot(alpha = 0.7, outlier.shape = 21, outlier.size = 1.5,
@@ -861,7 +994,7 @@ virtualSpecies <- function(
         box_theme
 
       # -- Boxplot 3: proportion true absences ------------------------------
-      p_box_trueabs <- ggplot(metrics_df,
+      p_box_trueabs <- ggplot(metrics_ok,
                               aes(x = factor(0), y = prop_true_abs)) +
         geom_boxplot(fill = "#E78AC3", alpha = 0.7,
                      outlier.shape = 21, outlier.size = 1.5, width = 0.4) +
