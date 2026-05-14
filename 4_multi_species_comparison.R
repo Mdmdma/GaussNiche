@@ -6,7 +6,8 @@
 # the species in the catalogue. Layout adjusts dynamically to the catalogue
 # size (1, 2, 4, … species).
 
-setwd("/home/mat/Desktop/semesterarbeit10/GaussNiche/")
+# Run from the repo root: the script and its sourced files use relative paths
+# (source("virtualSpecies_fn.R"), output/plots_multi_species_*.pdf, ...).
 
 library(terra)
 # library(geodata)
@@ -22,6 +23,20 @@ library(tictoc)
 library(future)
 library(furrr)
 source("virtualSpecies_fn.R")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 0. CLI ARGS  (positional; all optional, fall back to interactive defaults)
+#
+# Rscript 4_multi_species_comparison.R <cutoff> <n_realizations> <n_workers>
+# Used by submit_cutoff_sweep.sh to dispatch a SLURM array sweep over the
+# species.cutoff.threshold parameter.
+# ──────────────────────────────────────────────────────────────────────────────
+.cli <- commandArgs(trailingOnly = TRUE)
+cli_cutoff         <- if (length(.cli) >= 1L) as.numeric(.cli[1]) else 0.1
+cli_n_realizations <- if (length(.cli) >= 2L) as.integer(.cli[2]) else 1L
+cli_n_workers      <- if (length(.cli) >= 3L) as.integer(.cli[3]) else NA_integer_
+stopifnot(is.finite(cli_cutoff), cli_cutoff > 0, cli_cutoff < 1)
+stopifnot(is.finite(cli_n_realizations), cli_n_realizations >= 1L)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. ENVIRONMENTAL DATA AND PCA
@@ -46,8 +61,13 @@ cat("PC2 range:", round(range(dt$PC2), 2), "\n")
 # Filename includes the launch timestamp so successive runs never overwrite a
 # previous report.  Closed at script end (and on error) via on.exit().
 # ──────────────────────────────────────────────────────────────────────────────
-pdf_path <- sprintf("plots_multi_species_%s.pdf",
-                    format(Sys.time(), "%Y%m%d-%H%M%S"))
+out_dir <- "output"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+pdf_path <- file.path(
+  out_dir,
+  sprintf("plots_multi_species_cutoff-%.2f_%s.pdf",
+          cli_cutoff, format(Sys.time(), "%Y%m%d-%H%M%S"))
+)
 pdf(pdf_path, width = 14, height = 10)
 on.exit(try(dev.off(), silent = TRUE), add = TRUE)
 cat("Writing aggregate plots to: ", pdf_path, "\n", sep = "")
@@ -108,7 +128,7 @@ species_catalogue <- list(
                                mu = c(4, 1), sigma_PC1 = 1,   sigma_PC2 = 0.5)
 )
 
-N_REALIZATIONS <- 1    # smoke test; restore to 10 for production
+N_REALIZATIONS <- cli_n_realizations
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 5. SHARED virtualSpecies ARGUMENTS
@@ -132,12 +152,12 @@ shared_args <- list(
   pa_env_rast              = envData,
   verbose                  = TRUE,
   parallel                 = TRUE,
-  n_workers                = NULL,
+  n_workers                = if (is.na(cli_n_workers)) NULL else cli_n_workers,
   grid.res                 = grid_res_opt,
   thres                    = 0.75,
   chain.length             = 20000,
   burnIn                   = 1000,
-  species.cutoff.threshold = 0.1
+  species.cutoff.threshold = cli_cutoff
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -173,10 +193,16 @@ p_summary <- summarize_parameters(
   species_catalogue = species_catalogue,
   pca_var_exp = var_exp,
   extra = list(
-    grid_res_opt      = grid_res_opt,
-    optimRes_perc.thr = 20,
-    optimRes_cr       = 5,
-    pdf_path          = pdf_path
+    grid_res_opt             = grid_res_opt,
+    optimRes_perc.thr        = 20,
+    optimRes_cr              = 5,
+    pdf_path                 = pdf_path,
+    species.cutoff.threshold = cli_cutoff,
+    n_realizations_cli       = cli_n_realizations,
+    n_workers_cli            = if (is.na(cli_n_workers)) "default" else cli_n_workers,
+    slurm_job_id             = Sys.getenv("SLURM_JOB_ID",        "interactive"),
+    slurm_array_job_id       = Sys.getenv("SLURM_ARRAY_JOB_ID",  ""),
+    slurm_array_task_id      = Sys.getenv("SLURM_ARRAY_TASK_ID", "")
   )
 )
 print(p_summary)

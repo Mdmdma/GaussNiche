@@ -1,2 +1,3 @@
 Rplots.pdf
-plots_multi_species_*.pdf
+output/
+!output/.gitkeep
