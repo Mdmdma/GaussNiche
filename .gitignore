@@ -1,3 +1,2 @@
 Rplots.pdf
-output/
-!output/.gitkeep
+output/slurm*
