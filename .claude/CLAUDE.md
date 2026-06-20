@@ -101,6 +101,49 @@ GaussNiche/
 │       └── euler-r-spack-setup/   R-install recipe for Euler rocker/rstudio.
 ```
 
+## The `5d-niche` branch — higher-dimensional environment
+
+This branch keeps the 2-D pipeline above intact (as the reference) and adds a
+**k-dimensional** sibling so the *same* analysis (4 species: generalist/specialist
+× common/rare) runs in a 5-D environment where ≥5 PCs are needed for >80% variance.
+The richer E-space is built by adding climate-orthogonal datasets (soil, terrain,
+vegetation) to the WorldClim baseline, all via the `geodata` package on the
+WorldClim 10 arc-min Central/W-Europe grid. Files added (portable R; the
+`submit_*.sh` are the Euler/apptainer runners — see the skills):
+
+- `build_env_stack.R`    download + harmonise a broad candidate pool (clim/soil/
+                         ter/veg/anth) onto the baseline grid; cache to scratch.
+- `analyze_env_stack.R`  per-variable stats, correlation/VIF, per-block
+                         orthogonality-to-climate, full PCA with cumulative-80 /
+                         Kaiser / broken-stick "useful PC" criteria, forward block
+                         inclusion, curated candidate configs.
+- `build_final_stack.R`  subset the LOCKED layer set (`lean_natural`: 5 climate +
+                         soil pH/clay/bdod/SOC + terrain TRI/TPI + tree cover →
+                         5 PCs ≈ 82.5%), run PCA, save `background_5d.rds`.
+- `virtualSpecies_nd_fn.R`  k-D engine. Exports `pa_random`, `pa_mcmc` (forwards
+                         `dimensions = c("PC1",…,"PCk")` to the dimension-agnostic
+                         `USE.MCMC::paSamplingMcmc`), `compute_bandwidth_nd()`,
+                         `virtualSpecies_nd()`. The grid/NN "uniform" samplers are
+                         2-D by construction and intentionally NOT offered here —
+                         the MCMC sampler is the high-D generalisation of
+                         uniform-in-E-space sampling.
+- `5_highdim_species.R`  the 4 species in 5-D; mu/sigma as multiples of each PC's
+                         background sd (generalist σ=1.0·sd / specialist σ=0.4·sd;
+                         common μ=0 / rare μ=0.8·sd). `smoke` mode for validation.
+- `6_compare_5d.R`       cross-species/sampler report (combined metrics + PDF).
+- `bench_cache.R`        benchmark + correctness check for the
+                         `USE.MCMC::precomputeMcmcEnvironment()` cache that
+                         `pa_mcmc` forwards via `precomputed.env=` (cached vs
+                         uncached timing + bit-identity). Run with
+                         `submit_bench_cache.sh`.
+
+Key k-D differences vs the 2-D module: `mu`/`sigma` are length-k vectors,
+`Σ = diag(sigma)·Cor·diag(sigma)`; suitability/Bernoulli/`hypervolume_gaussian`/
+bandwidth operate on the k PC columns; niche & PA plots are drawn on the PC1×PC2
+*projection* (suitability sliced at μ); coverage is reported per axis
+(`rel_cov_PC1…PCk`). All heavy steps run on SLURM via the `submit_*.sh` scripts
+(apptainer + the rocker SIF), never the login node.
+
 ## Sampler interface
 
 Every pseudo-absence sampler is a function with this signature:

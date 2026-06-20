@@ -194,6 +194,12 @@ pa_uniform <- function(background, N_pa, pres = NULL, seed = 123,
 #'                     Percentile of the species-presence GMM density used to
 #'                     define the region the chain may visit. Forwarded to
 #'                     USE.MCMC::paSamplingMcmc(); package default is 0.95.
+#' @param precomputed.env
+#'                     Optional bundle from USE.MCMC::precomputeMcmcEnvironment().
+#'                     The PCA + environmental GMM fit are constant across species
+#'                     on the same env.rast, so compute the bundle once and pass
+#'                     it here to skip that work on every realisation. Must match
+#'                     the call's dimensions and seed.
 #' @param ...          Ignored additional arguments (interface compatibility,
 #'                     swallows pa_uniform's grid.res / thres)
 pa_mcmc <- function(background, N_pa, pres = NULL, seed = 123,
@@ -202,7 +208,8 @@ pa_mcmc <- function(background, N_pa, pres = NULL, seed = 123,
                     burnIn = 1000,
                     num.chains = 1, num.cores = 1,
                     engine = "auto",
-                    species.cutoff.threshold = 0.95, ...) {
+                    species.cutoff.threshold = 0.95,
+                    precomputed.env = NULL, ...) {
 
   if (!requireNamespace("USE.MCMC", quietly = TRUE))
     stop("Package 'USE.MCMC' is required for pa_mcmc. ",
@@ -242,10 +249,14 @@ pa_mcmc <- function(background, N_pa, pres = NULL, seed = 123,
       seed.number     = seed,
       engine          = engine,
       species.cutoff.threshold = species.cutoff.threshold,
+      precomputed.env = precomputed.env,
       verbose         = FALSE,
       plot_proc       = FALSE
     ),
     error = function(e) {
+      # A misconfiguration (e.g. an incompatible precomputed.env) must fail
+      # loudly, not be silently downgraded to random sampling.
+      if (inherits(e, "USE.MCMC_config_error")) stop(e)
       warning("USE.MCMC::paSamplingMcmc failed ('", conditionMessage(e),
               "'). Falling back to pa_random.")
       NULL
