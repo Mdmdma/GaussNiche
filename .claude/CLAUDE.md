@@ -122,11 +122,16 @@ WorldClim 10 arc-min Central/W-Europe grid. Files added (portable R; the
                          5 PCs ≈ 82.5%), run PCA, save `background_5d.rds`.
 - `virtualSpecies_nd_fn.R`  k-D engine. Exports `pa_random`, `pa_mcmc` (forwards
                          `dimensions = c("PC1",…,"PCk")` to the dimension-agnostic
-                         `USE.MCMC::paSamplingMcmc`), `compute_bandwidth_nd()`,
-                         `virtualSpecies_nd()`. The grid/NN "uniform" samplers are
-                         2-D by construction and intentionally NOT offered here —
-                         the MCMC sampler is the high-D generalisation of
-                         uniform-in-E-space sampling.
+                         `USE.MCMC::paSamplingMcmc`), `pa_nn` (k-D via the now
+                         dimension-general `USE.MCMC::paSamplingNn`: uniform-box
+                         proposals + NN-remap with a √(d/2) support-threshold
+                         correction; acceptance falls with d, so it is
+                         compute-bound in high d — raise `n.candidates`/`n.tr`),
+                         `compute_bandwidth_nd()`, `virtualSpecies_nd()`. `pa_nn`
+                         is provided but NOT in the default sampler list — add it
+                         via `pa_samplers = list(random = pa_random, mcmc =
+                         pa_mcmc, nn = pa_nn)`. Only the KDE backend
+                         `USE.MCMC::paSampling` remains 2-D-only.
 - `5_highdim_species.R`  the 4 species in 5-D; mu/sigma as multiples of each PC's
                          background sd (generalist σ=1.0·sd / specialist σ=0.4·sd;
                          common μ=0 / rare μ=0.8·sd). `smoke` mode for validation.
