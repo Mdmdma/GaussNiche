@@ -9,9 +9,9 @@
 #SBATCH --time=04:00:00
 
 # Run the 4 virtual species in 5-D (random + mcmc samplers).
-#   smoke validation:  sbatch --export=ALL,MODE=smoke --cpus-per-task=2 --time=00:20:00 submit_5d_species.sh
-#   full run:          sbatch submit_5d_species.sh        (MODE defaults to "full")
-#   override depth:    sbatch --export=ALL,N_REALIZATIONS=50 submit_5d_species.sh
+#   smoke validation:  sbatch --export=ALL,MODE=smoke --cpus-per-task=2 --time=00:20:00 sbatch/submit_5d_species.sh
+#   full run:          sbatch sbatch/submit_5d_species.sh        (MODE defaults to "full")
+#   override depth:    sbatch --export=ALL,N_REALIZATIONS=50 sbatch/submit_5d_species.sh
 
 set -euo pipefail
 cd "$HOME/GaussNiche"

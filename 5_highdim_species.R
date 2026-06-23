@@ -14,7 +14,7 @@
 #
 # Inputs : <scratch>/GaussNiche/env5d/{final_stack_lean_natural.tif, background_5d.rds}
 # Outputs: <scratch>/GaussNiche/results5d/{<sp>_<mode>.rds, summary_<mode>.rds}
-# Run on a compute node via submit_5d_species.sh.
+# Run on a compute node via sbatch/submit_5d_species.sh.
 # =============================================================================
 
 suppressPackageStartupMessages({

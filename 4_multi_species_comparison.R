@@ -28,7 +28,7 @@ source("virtualSpecies_fn.R")
 # 0. CLI ARGS  (positional; all optional, fall back to interactive defaults)
 #
 # Rscript 4_multi_species_comparison.R <cutoff> <n_realizations> <n_workers>
-# Used by submit_cutoff_sweep.sh to dispatch a SLURM array sweep over the
+# Used by sbatch/submit_cutoff_sweep.sh to dispatch a SLURM array sweep over the
 # species.cutoff.threshold parameter.
 # ──────────────────────────────────────────────────────────────────────────────
 .cli <- commandArgs(trailingOnly = TRUE)

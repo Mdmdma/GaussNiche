@@ -454,7 +454,7 @@ dev.off()
 cat(sprintf("\nRendered %d pages; %d bookmark targets.\n", PAGE, length(BM)))
 
 # Write the bookmark targets (page<TAB>title) for the outline injection step in
-# submit_compare_5d.sh (python/pypdf), which runs after this script.
+# sbatch/submit_compare_5d.sh (python/pypdf), which runs after this script.
 bm_tsv <- file.path(out_dir, paste0("report_", mode, "_bookmarks.tsv"))
 con <- file(bm_tsv, "wt")
 for (b in BM) cat(sprintf("%d\t%s\n", b$page, gsub("[\t\n]", " ", b$title)), file = con)

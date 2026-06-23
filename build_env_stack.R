@@ -19,7 +19,7 @@
 #
 # Output: <scratch>/GaussNiche/env5d/env_stack_candidate.tif
 #
-# Run on a COMPUTE NODE (never login). See submit_env_analysis.sh.
+# Run on a COMPUTE NODE (never login). See sbatch/submit_env_analysis.sh.
 # =============================================================================
 
 suppressPackageStartupMessages({

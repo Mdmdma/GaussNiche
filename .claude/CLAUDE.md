@@ -109,7 +109,7 @@ This branch keeps the 2-D pipeline above intact (as the reference) and adds a
 The richer E-space is built by adding climate-orthogonal datasets (soil, terrain,
 vegetation) to the WorldClim baseline, all via the `geodata` package on the
 WorldClim 10 arc-min Central/W-Europe grid. Files added (portable R; the
-`submit_*.sh` are the Euler/apptainer runners — see the skills):
+`sbatch/submit_*.sh` are the Euler/apptainer runners — see the skills):
 
 - `build_env_stack.R`    download + harmonise a broad candidate pool (clim/soil/
                          ter/veg/anth) onto the baseline grid; cache to scratch.
@@ -140,13 +140,13 @@ WorldClim 10 arc-min Central/W-Europe grid. Files added (portable R; the
                          `USE.MCMC::precomputeMcmcEnvironment()` cache that
                          `pa_mcmc` forwards via `precomputed.env=` (cached vs
                          uncached timing + bit-identity). Run with
-                         `submit_bench_cache.sh`.
+                         `sbatch/submit_bench_cache.sh`.
 
 Key k-D differences vs the 2-D module: `mu`/`sigma` are length-k vectors,
 `Σ = diag(sigma)·Cor·diag(sigma)`; suitability/Bernoulli/`hypervolume_gaussian`/
 bandwidth operate on the k PC columns; niche & PA plots are drawn on the PC1×PC2
 *projection* (suitability sliced at μ); coverage is reported per axis
-(`rel_cov_PC1…PCk`). All heavy steps run on SLURM via the `submit_*.sh` scripts
+(`rel_cov_PC1…PCk`). All heavy steps run on SLURM via the `sbatch/submit_*.sh` scripts
 (apptainer + the rocker SIF), never the login node.
 
 ## Sampler interface

@@ -13,8 +13,8 @@
 #     measure the speedup. Compiles the Rcpp/RcppArmadillo inner loop, so it runs
 #     inside the rocker apptainer container on a compute node (never the login node).
 #
-#   sbatch submit_bench_cache.sh                 # K=4 species, chain.length=8000
-#   sbatch --export=ALL,K=8,CHAIN=12000 submit_bench_cache.sh
+#   sbatch sbatch/submit_bench_cache.sh                 # K=4 species, chain.length=8000
+#   sbatch --export=ALL,K=8,CHAIN=12000 sbatch/submit_bench_cache.sh
 
 set -euo pipefail
 cd "$HOME/GaussNiche"

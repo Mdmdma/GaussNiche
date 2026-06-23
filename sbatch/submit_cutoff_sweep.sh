@@ -13,7 +13,7 @@
 # Each task runs 4_multi_species_comparison.R with one cutoff value.
 #
 # Override realisations and workers from the sbatch command line:
-#   sbatch --export=ALL,N_REALIZATIONS=10,N_WORKERS=8 submit_cutoff_sweep.sh
+#   sbatch --export=ALL,N_REALIZATIONS=10,N_WORKERS=8 sbatch/submit_cutoff_sweep.sh
 # Defaults below are intentionally modest — bump for production runs.
 
 set -euo pipefail
