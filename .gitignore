@@ -1,4 +1,9 @@
+# R
 Rplots.pdf
-output/slurm*
-output/smoke*
 plots*
+
+# SLURM job logs (output/*.out, output/*.err) and run artifacts
+output/
+
+# vendored python deps (regenerate with: python3 vendor_pypdf.py)
+pylib/

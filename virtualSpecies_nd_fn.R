@@ -72,6 +72,7 @@ pa_mcmc <- function(background, N_pa, pres = NULL, seed = 123,
                     chain.length = 10000, burnIn = 1000,
                     num.chains = 1, num.cores = 1, engine = "auto",
                     species.cutoff.threshold = 0.95,
+                    environmental.cutof.percentile = 0.001,
                     precomputed.env = NULL, ...) {
   if (!requireNamespace("USE.MCMC", quietly = TRUE))
     stop("Package 'USE.MCMC' is required for pa_mcmc.")
@@ -93,6 +94,7 @@ pa_mcmc <- function(background, N_pa, pres = NULL, seed = 123,
       num.chains = num.chains, num.cores = num.cores,
       seed.number = seed, engine = engine,
       species.cutoff.threshold = species.cutoff.threshold,
+      environmental.cutof.percentile = environmental.cutof.percentile,
       precomputed.env = precomputed.env,
       verbose = FALSE, plot_proc = FALSE),
     error = function(e) {
