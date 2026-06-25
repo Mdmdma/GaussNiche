@@ -100,6 +100,20 @@ GaussNiche/
 ├── 3_ virtualSpecies_cases.R      additional case-study runs (note the
 │                                  space in the filename — keep it; quote
 │                                  it when sourcing).
+├── 4_multi_species_comparison.R   2-D multi-species comparison driver (CLI
+│                                  cutoff sweep); base for run_2d_experiment.R.
+├── run_2d_experiment.R            paper §2.3 experiment: the 4 Table-1 species
+│                                  in 2-D (RND/USE/uniform+ samplers) over R=50
+│                                  Bernoulli realisations; saves results + the
+│                                  demanded boxplots to <scratch>/.../results2d.
+│                                  Run via sbatch/submit_2d_experiment.sh.
+├── experiment_plots.R             dimension-agnostic metric boxplots (overlap /
+│                                  per-axis range coverage / prop true-absence).
+│                                  Consumes virtualSpecies() AND
+│                                  virtualSpecies_nd() results; discovers
+│                                  samplers + rel_cov_* axes at runtime.
+├── vignettes/2d-experiment.Rmd    reproducible vignette for the §2.3 results
+│                                  (loads the SLURM run, or a small inline demo).
 ├── README.md                      methodology summary (matches §"What this
 │                                  project is" above).
 ├── LICENSE                        GPL-3 (see file).

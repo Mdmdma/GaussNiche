@@ -1,0 +1,164 @@
+---
+title: "Sampler comparison across virtual species (2-D experiment)"
+output:
+  rmarkdown::html_vignette:
+    self_contained: false
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{2d-experiment}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE, comment = "#>",
+  ## Figures as vector PDFs (cairo_pdf embeds glyphs/lines as vectors).
+  dev = "cairo_pdf", fig.width = 7, fig.height = 6, dpi = 300,
+  message = FALSE, warning = FALSE
+)
+```
+
+This vignette reproduces the **experimental setting** of the paper
+*Pseudo-absences generation through a Markov chain sampler* (§2.3): four virtual
+species (VS) in the leading two principal components of the WorldClim bioclimatic
+stack, with three pseudo-absence (PA) samplers benchmarked over `R` independent
+Bernoulli realisations. It is the reproducible companion the paper points to at
+<https://github.com/danddr/GaussNiche>.
+
+> **Compute note.** Running the samplers (`pa_mcmc` Markov chains, `pa_uniform`
+> grid calibration via `optimRes`) is **minutes of work**, not a login-node task.
+> On a cluster, generate the full `R = 50` results with the SLURM driver
+> (`sbatch sbatch/submit_2d_experiment.sh`) and knit this vignette against them;
+> the inline fallback below runs a deliberately small demo so the document still
+> knits standalone.
+
+```{r libraries}
+library(terra)
+library(USE.MCMC)
+library(ggplot2)
+library(sf)
+library(hypervolume)
+library(MASS)
+
+## knitr sets the working directory to vignettes/, so the repo root is one up.
+source("../virtualSpecies_fn.R")
+source("../experiment_plots.R")
+```
+
+## The four virtual species
+
+Each VS is a bivariate Gaussian suitability surface in (PC1, PC2), normalised to
+peak 1. The design is a $2\times2$ factorial crossing **niche breadth**
+(generalist vs specialist) with **niche position** (common vs rare); all share
+$\rho = 0$ and a 1:1 presence:pseudo-absence ratio.
+
+```{r species-table, echo = FALSE}
+catalogue <- list(
+  sp1_generalist_common = list(label = "Generalist · common", mu = c(0, 0), sigma_PC1 = 3, sigma_PC2 = 2),
+  sp2_specialist_common = list(label = "Specialist · common", mu = c(0, 0), sigma_PC1 = 1, sigma_PC2 = 0.5),
+  sp3_generalist_rare   = list(label = "Generalist · rare",   mu = c(4, 1), sigma_PC1 = 3, sigma_PC2 = 2),
+  sp4_specialist_rare   = list(label = "Specialist · rare",   mu = c(4, 1), sigma_PC1 = 1, sigma_PC2 = 0.5))
+knitr::kable(
+  data.frame(
+    Species  = names(catalogue),
+    Breadth  = c("generalist", "specialist", "generalist", "specialist"),
+    Position = c("common", "common", "rare", "rare"),
+    mu       = vapply(catalogue, function(s) sprintf("(%g, %g)", s$mu[1], s$mu[2]), character(1)),
+    sigma    = vapply(catalogue, function(s) sprintf("(%g, %g)", s$sigma_PC1, s$sigma_PC2), character(1))),
+  row.names = FALSE, caption = "The four virtual species (paper Table 1).")
+```
+
+## The three samplers and three diagnostics
+
+We benchmark the same presence set at every realisation with three samplers
+sharing the GaussNiche sampler interface:
+
+* **RND** (`pa_random`) — uniform draw across the geographic background.
+* **USE** (`pa_uniform`) — uniform across the realised environmental space
+  (`USE.MCMC::paSampling`).
+* **uniform+** (`pa_mcmc`) — the Markov-chain sampler that extends USE to higher
+  dimensions with a Gaussian-mixture presence exclusion.
+
+Per (species, sampler, realisation) we record three metrics, stored in
+`result$samplers[[name]]$metrics`: hypervolume **overlap** (presence vs PA cloud;
+lower separates better), per-axis range **coverage** (`rel_cov_PC*`; PA PC-range /
+background PC-range), and **proportion of true absences** (`prop_true_abs`; PAs on
+true-absence cells, i.e. where the Bernoulli draw $y_i = 0$; higher is cleaner).
+The plotting module discovers the coverage axes
+at runtime, so the same code serves the 2-D experiment here and the k-D extension.
+
+## Load the full results, or run a small demo
+
+```{r load-or-run}
+user        <- Sys.getenv("USER")
+results_rds <- file.path("/cluster/scratch", user, "GaussNiche", "results2d", "summary_2d_full.rds")
+demo_n_real <- 6L   # only used by the standalone fallback
+
+if (file.exists(results_rds)) {
+  message("Using precomputed R = 50 results: ", results_rds)
+  bundle  <- readRDS(results_rds)
+  metrics <- bundle$metrics
+  source_note <- sprintf("Precomputed SLURM run (R = %d).", bundle$n_realizations)
+} else {
+  message("No precomputed results found — running a small inline demo (R = ", demo_n_real, ").")
+  envData <- terra::rast(USE.MCMC::Worldclim_tmp, type = "xyz")
+  rpc     <- rastPCA(envData, stand = TRUE)
+  dt      <- na.omit(as.data.frame(rpc$PCs[[c("PC1", "PC2")]], xy = TRUE))
+  bw      <- compute_bandwidth(dt)
+
+  shared <- list(
+    dt = dt, envData = envData, rho = 0, max_pres = 300, bgk_prev = 1,
+    pa_samplers = list(random = pa_random, uniform = pa_uniform, mcmc = pa_mcmc),
+    n_realizations = demo_n_real, seed_base = 42, seed_pseudo_base = 123,
+    bw = bw, pa_env_rast = envData, verbose = FALSE, parallel = FALSE,
+    grid.res = 5, thres = 0.75, chain.length = 4000, burnIn = 500,
+    species.cutoff.threshold = 0.1)
+  res_list <- lapply(catalogue, function(s)
+    do.call(virtualSpecies, c(shared, list(mu = s$mu, sigma_PC1 = s$sigma_PC1, sigma_PC2 = s$sigma_PC2))))
+  metrics <- collect_experiment_metrics(
+    res_list, species_labels = vapply(catalogue, `[[`, character(1), "label"))
+  source_note <- sprintf("Standalone inline demo (R = %d, reduced chain).", demo_n_real)
+}
+```
+
+## The demanded figure: boxplots of the three metrics
+
+Each box summarises the empirical distribution of a metric across the `R`
+Bernoulli realisations; rows are metrics (coverage split per PC axis), columns are
+species, and the three boxes per panel are the samplers.
+
+```{r boxplots, fig.height = 7}
+plot_experiment_boxplots(metrics, title = "Sampler comparison across virtual species")
+```
+
+`r source_note`
+
+### Each metric on its own
+
+```{r per-metric-overlap, fig.height = 3.2}
+plot_experiment_metric(metrics, "overlap")
+```
+
+```{r per-metric-coverage, fig.height = 4.2}
+plot_experiment_metric(metrics, "coverage")
+```
+
+```{r per-metric-trueabs, fig.height = 3.2}
+plot_experiment_metric(metrics, "prop_true_abs")
+```
+
+## Reproducing the full run
+
+The headline figures in the paper come from the full `R = 50` analysis. On the
+cluster:
+
+```sh
+sbatch sbatch/submit_2d_experiment.sh          # MODE=full, R from N_REALIZATIONS (default 50)
+# smoke check first:
+sbatch --export=ALL,MODE=smoke --cpus-per-task=2 --time=00:20:00 sbatch/submit_2d_experiment.sh
+```
+
+The driver writes per-species `.rds`, a combined `metrics_2d_full.csv`, the
+`summary_2d_full.rds` this vignette loads, and the boxplot figures (vector PDF +
+PNG) to `<scratch>/GaussNiche/results2d/`.
