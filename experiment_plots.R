@@ -29,10 +29,10 @@ suppressPackageStartupMessages(library(ggplot2))
 # Maps the pa_samplers list KEYS used in the drivers to the paper's notation, and
 # to a colourblind-safe (Okabe-Ito) fill. 'mcmc' is the paper's "uniform+" method
 # (Markov-chain sampler, §2.2). Override both for other sampler sets.
-EXPERIMENT_SAMPLER_LABELS <- c(random = "RND", uniform = "USE",
-                               mcmc = "uniform+", nn = "NN")
-EXPERIMENT_SAMPLER_COLORS <- c(random = "#E69F00", uniform = "#56B4E9",
-                               mcmc = "#009E73", nn = "#CC79A7")
+EXPERIMENT_SAMPLER_LABELS <- c(random = "RND", buffer = "buffer-out",
+                               uniform = "USE", mcmc = "uniform+", nn = "NN")
+EXPERIMENT_SAMPLER_COLORS <- c(random = "#E69F00", buffer = "#D55E00",
+                               uniform = "#56B4E9", mcmc = "#009E73", nn = "#CC79A7")
 
 # --- internal helpers ---------------------------------------------------------
 

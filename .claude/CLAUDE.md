@@ -103,15 +103,26 @@ GaussNiche/
 ├── 4_multi_species_comparison.R   2-D multi-species comparison driver (CLI
 │                                  cutoff sweep); base for run_2d_experiment.R.
 ├── run_2d_experiment.R            paper §2.3 experiment: the 4 Table-1 species
-│                                  in 2-D (RND/USE/uniform+ samplers) over R=50
+│                                  in 2-D (RND/buffer-out/USE/uniform+) over R=50
 │                                  Bernoulli realisations; saves results + the
 │                                  demanded boxplots to <scratch>/.../results2d.
 │                                  Run via sbatch/submit_2d_experiment.sh.
+├── run_5d_experiment.R            5-D arm of the §2.3 experiment (env5d
+│                                  'lean_natural', 5 PCs; samplers RND/buffer-out/
+│                                  uniform+ — USE omitted, it is 2-D-only). Via
+│                                  sbatch/submit_5d_experiment.sh → results5d_experiment.
 ├── experiment_plots.R             dimension-agnostic metric boxplots (overlap /
 │                                  per-axis range coverage / prop true-absence).
 │                                  Consumes virtualSpecies() AND
 │                                  virtualSpecies_nd() results; discovers
 │                                  samplers + rel_cov_* axes at runtime.
+├── pa_buffer.R                    geographic "buffer-out" PA sampler (excl. cells
+│                                  within 50 km of presences; EPSG:3035 distance).
+│                                  Dimension-agnostic spatial baseline; add to any
+│                                  pa_samplers list (used in both experiments).
+├── results/{2d,5d}/              persisted experiment figures + metrics CSV +
+│                                  summary .rds (re-style figures without re-running;
+│                                  survives the scratch purge).
 ├── vignettes/2d-experiment.Rmd    reproducible vignette for the §2.3 results
 │                                  (loads the SLURM run, or a small inline demo).
 ├── README.md                      methodology summary (matches §"What this

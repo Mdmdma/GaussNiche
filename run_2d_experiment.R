@@ -3,8 +3,8 @@
 # Reproduces the "Experimental setting" of the markov-chain-sampler paper: the
 # 2x2 factorial (breadth x position) of four virtual species in the leading two
 # PCs of the WorldClim bioclimatic stack (USE.MCMC::Worldclim_tmp), benchmarking
-# three pseudo-absence samplers — RND (pa_random), USE (pa_uniform), and uniform+
-# (pa_mcmc) — over R independent Bernoulli realisations.
+# four pseudo-absence samplers — RND (pa_random), buffer-out (pa_buffer_out),
+# USE (pa_uniform), and uniform+ (pa_mcmc) — over R independent Bernoulli realisations.
 #
 # Niche design (Table 1): rho = 0, prevalence 1:1, all four share the breadth x
 # position grid:
@@ -36,6 +36,7 @@ suppressPackageStartupMessages({
 })
 source("virtualSpecies_fn.R")
 source("experiment_plots.R")
+source("pa_buffer.R")
 
 args      <- commandArgs(trailingOnly = TRUE)
 mode      <- if (length(args) >= 1) args[1] else "full"
@@ -113,13 +114,14 @@ if (SPECIES_SET == "sp1") species_catalogue <- species_catalogue["sp1_generalist
 shared_args <- list(
   dt = dt, envData = envData, rho = 0,
   max_pres = MAXP, bgk_prev = 1,
-  pa_samplers = list(random = pa_random, uniform = pa_uniform, mcmc = pa_mcmc),
+  pa_samplers = list(random = pa_random, buffer = pa_buffer_out,
+                     uniform = pa_uniform, mcmc = pa_mcmc),
   n_realizations = N_REAL, seed_base = 42, seed_pseudo_base = 123,
   pc1_lab = pc1_lab, pc2_lab = pc2_lab, kde_df = kde_df,
   bw = bw_background, pa_env_rast = envData,
   verbose = TRUE, parallel = PAR,
   n_workers = if (is.na(n_workers)) NULL else n_workers,
-  grid.res = grid_res_opt, thres = 0.75,
+  grid.res = grid_res_opt, thres = 0.75, buffer_km = 50,
   chain.length = CHAIN, burnIn = BURN,
   species.cutoff.threshold = CUTOFF)
 
