@@ -10,6 +10,16 @@ them publication-grade, and writes them under the **exact filenames** the paper'
 `\includegraphics` paths require. It is deliberately scoped: it does not touch the
 many exploratory plots in the vignette or the GaussNiche report PDFs.
 
+> **These figures are produced by the USE.MCMC vignette, not by GaussNiche.** The
+> author's chosen approach is to improve them *in place* in the vignette chunks,
+> and the authoritative producer-side guide lives at
+> `../USE.MCMC/.claude/skills/publication-figures/SKILL.md` — **prefer it.** Do
+> not rebuild the chains or figures from scratch in GaussNiche (the vignette
+> already builds `coda.chain.list` and plots the diagnostics); edit the chunks.
+> Final-paper figures are **vector PDFs**. The 2-D/3-D and 50000-vs-5000-step
+> caption mismatches and the static `trace_plots.png` are knowingly left as-is —
+> see that skill's "Known caption mismatches" / "trace_plots.png" sections.
+
 The manuscript lives in a **sibling repo**:
 `../markov-chain-sampler-paper/` (relative to the GaussNiche repo root, which is
 your working directory). The graphics directory the paper reads from is:
