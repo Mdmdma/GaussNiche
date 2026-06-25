@@ -20,6 +20,15 @@ containerised R) consult the relevant skill before running anything:
 If neither applies (plain Linux/macOS workstation), the rest of this file
 is all you need.
 
+One **task** skill is host-independent (load it on demand, not gated by host):
+
+- `.claude/skills/publication-figures/SKILL.md` — regenerate the
+  markov-chain-sampler paper's in-scope figures (the Results sampler-comparison
+  "distribution of PC values" plot and the appendix MCMC diagnostics:
+  autocorrelation, Gelman-Rubin, trace/posterior) as publication-ready artifacts,
+  written under the exact filenames the sibling manuscript's `\includegraphics`
+  paths require.
+
 ---
 
 ## What this project is
@@ -98,7 +107,10 @@ GaussNiche/
 │   ├── CLAUDE.md                  this file.
 │   └── skills/
 │       ├── euler-rstudio-server/  runtime guidance for Euler RStudio.
-│       └── euler-r-spack-setup/   R-install recipe for Euler rocker/rstudio.
+│       ├── euler-r-spack-setup/   R-install recipe for Euler rocker/rstudio.
+│       └── publication-figures/   regenerate the paper's in-scope figures
+│                                  (Results PC-distribution + appendix MCMC
+│                                  diagnostics) as publication-ready artifacts.
 ```
 
 ## The `5d-niche` branch — higher-dimensional environment
