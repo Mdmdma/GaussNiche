@@ -120,6 +120,10 @@ GaussNiche/
 │                                  within 50 km of presences; EPSG:3035 distance).
 │                                  Dimension-agnostic spatial baseline; add to any
 │                                  pa_samplers list (used in both experiments).
+├── imports.R                     preflight package-load check (terra, USE.MCMC,
+│                                  hypervolume, sf, future/furrr, …); run inside the
+│                                  apptainer env before SLURM dispatch (used by
+│                                  sbatch/submit_smoke_test.sh).
 ├── results/{2d,5d}/              persisted experiment figures + metrics CSV +
 │                                  summary .rds (re-style figures without re-running;
 │                                  survives the scratch purge).
@@ -138,9 +142,9 @@ GaussNiche/
 │                                  diagnostics) as publication-ready artifacts.
 ```
 
-## The `5d-niche` branch — higher-dimensional environment
+## Higher-dimensional environment (the `5d-niche` extension)
 
-This branch keeps the 2-D pipeline above intact (as the reference) and adds a
+These files keep the 2-D pipeline above intact (as the reference) and add a
 **k-dimensional** sibling so the *same* analysis (4 species: generalist/specialist
 × common/rare) runs in a 5-D environment where ≥5 PCs are needed for >80% variance.
 The richer E-space is built by adding climate-orthogonal datasets (soil, terrain,
@@ -170,8 +174,11 @@ WorldClim 10 arc-min Central/W-Europe grid. Files added (portable R; the
                          pa_mcmc, nn = pa_nn)`. Only the KDE backend
                          `USE.MCMC::paSampling` remains 2-D-only.
 - `5_highdim_species.R`  the 4 species in 5-D; mu/sigma as multiples of each PC's
-                         background sd (generalist σ=1.0·sd / specialist σ=0.4·sd;
-                         common μ=0 / rare μ=0.8·sd). `smoke` mode for validation.
+                         background sd (generalist σ=1.0·sd / specialist σ=0.5·sd;
+                         common μ = KDE mode of the 5-D background / rare μ = fixed
+                         peripheral point c(1.55,1.13,1.4,0.8,1.2)). `smoke` mode for
+                         validation. (run_5d_experiment.R is the §2.3 5-D arm built
+                         on this engine — see the main repository map.)
 - `6_compare_5d.R`       cross-species/sampler report (combined metrics + PDF).
 - `bench_cache.R`        benchmark + correctness check for the
                          `USE.MCMC::precomputeMcmcEnvironment()` cache that

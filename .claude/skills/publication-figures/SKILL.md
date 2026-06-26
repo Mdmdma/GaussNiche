@@ -1,6 +1,6 @@
 ---
 name: publication-figures
-description: Regenerate the in-scope figures of the markov-chain-sampler paper ("Pseudo-absences generation through a Markov Chain sampler") as publication-ready artifacts and place them where the manuscript expects them. Use when the user asks to remake, refresh, or improve the Results sampler-comparison "distribution of PC values" figure or the appendix MCMC diagnostics (autocorrelation, Gelman-Rubin, trace/posterior), or when those figures look low-DPI / off-house-style / decoupled from the current code. NOT for in-vignette exploratory plots or for the GaussNiche per-species report PDFs.
+description: Regenerate the appendix MCMC-diagnostic figures of the markov-chain-sampler paper ("Pseudo-absences generation through a Markov Chain sampler") — autocorrelation, Gelman-Rubin, trace/posterior — as publication-ready vector PDFs where the manuscript expects them. Use when those appendix figures look low-DPI / off-house-style / decoupled from the current code; the authoritative producer is the USE.MCMC-side publication-figures skill (the figures come from its vignette). NOTE: the former Results "distribution of PC values" figure (generate-combined-plot) was REMOVED from the paper; the current Results figures are the GaussNiche §2.3 sampler-comparison boxplots produced by run_2d_experiment.R / run_5d_experiment.R, NOT this skill. NOT for in-vignette exploratory plots or the GaussNiche per-species report PDFs.
 ---
 
 # Publication figures for the markov-chain-sampler paper
@@ -16,9 +16,11 @@ many exploratory plots in the vignette or the GaussNiche report PDFs.
 > `../USE.MCMC/.claude/skills/publication-figures/SKILL.md` — **prefer it.** Do
 > not rebuild the chains or figures from scratch in GaussNiche (the vignette
 > already builds `coda.chain.list` and plots the diagnostics); edit the chunks.
-> Final-paper figures are **vector PDFs**. The 2-D/3-D and 50000-vs-5000-step
-> caption mismatches and the static `trace_plots.png` are knowingly left as-is —
-> see that skill's "Known caption mismatches" / "trace_plots.png" sections.
+> Final-paper figures are **vector PDFs**, produced by the vignette and copied via
+> `make figures`. (`trace_plots` is now a real vignette chunk producing
+> `trace_plots-1.pdf`, no longer a static hand-made PNG.) Any remaining 2-D/3-D or
+> step-count caption notes are tracked in that skill's "Known caption mismatches"
+> section.
 
 The manuscript lives in a **sibling repo**:
 `../markov-chain-sampler-paper/` (relative to the GaussNiche repo root, which is
@@ -46,16 +48,25 @@ the filename**, misspelling included.
 
 | In-scope figure | Required filename in `graphics/` | Paper ref |
 | --- | --- | --- |
-| Results — distribution of PC values | `generate-combined-plot-1.png` | `text/results.tex:2-7`, `fig:posterior_comparison` |
-| Appendix — autocorrelation | `autocorreltation-plot-1.png` *(sic — keep the typo)* | `text/appendix/appendix.tex:5-10`, `fig:autocorrelation_analysis` |
-| Appendix — Gelman-Rubin | `gelman-plot-1.png` | `text/appendix/appendix.tex:13-18`, `fig:gelman-rubin-appendix` |
-| Appendix — trace + posterior | `trace_plots.png` | `text/appendix/appendix.tex:19-24`, `fig:traceplot` |
+| Appendix — autocorrelation | `autocorreltation-plot-1.pdf` *(sic — keep the typo)* | `text/appendix/appendix.tex`, `fig:autocorrelation_analysis` |
+| Appendix — Gelman-Rubin | `gelman-plot-1.pdf` | `text/appendix/appendix.tex`, `fig:gelman-rubin-appendix` |
+| Appendix — trace + posterior | `trace_plots-1.pdf` | `text/appendix/appendix.tex`, `fig:traceplot` |
 
-`autocorreltation-plot-1.png` and `gelman-plot-1.png` are produced by the paper's
-`make figures` target, which copies the knitr `figure-html/` outputs from the
-USE.MCMC vignette into `graphics/`. `generate-combined-plot-1.png` is the same
-mechanism. `trace_plots.png` is **static / hand-curated** — it is NOT in the
-Makefile and NOT produced by any chunk (see Blocker 4).
+All three appendix figures are **vector PDFs** produced by the USE.MCMC vignette
+and copied into `graphics/` by the paper's `make figures` target — all three are
+listed in the paper `Makefile`, including `trace_plots-1.pdf`, which is now a real
+vignette chunk (no longer a static hand-made PNG).
+
+> **Results figure moved out of this skill's scope.** The former
+> `generate-combined-plot-1.png` (`fig:posterior_comparison`, "distribution of PC
+> values") has been **removed from the paper**. The current Results figures are the
+> GaussNiche §2.3 sampler-comparison boxplots — `sampler-comparison-boxplots.pdf`
+> (2-D, `fig:sampler_comparison`) and `sampler-comparison-boxplots-5d.pdf`
+> (5-D, `fig:sampler_comparison_5d`) — produced by `run_2d_experiment.R` /
+> `run_5d_experiment.R` and copied into `graphics/` directly, NOT by this skill.
+> The per-figure recipe sections further below that still reference `.png`
+> filenames or `generate-combined-plot` are **historical**; for the appendix
+> diagnostics the USE.MCMC-side skill is authoritative.
 
 If you decide to switch any figure to a vector PDF (recommended, see Shared
 styling), you MUST also update the matching `\includegraphics{...}` extension in
