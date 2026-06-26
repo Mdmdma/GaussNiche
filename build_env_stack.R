@@ -31,6 +31,11 @@ suppressPackageStartupMessages({
 cat("terra", as.character(packageVersion("terra")),
     "| geodata", as.character(packageVersion("geodata")), "\n")
 
+# Threaded GDAL warp/resample -- value-neutral (changes scheduling, not numbers),
+# a free speedup on the per-block harmonise(). No furrr layer in this script, so a
+# multithreaded BLAS is also fine here -- do NOT pin OMP/OPENBLAS=1 in its sbatch.
+Sys.setenv(GDAL_NUM_THREADS = "ALL_CPUS")
+
 # --- network: compute nodes reach the internet only via the ETH proxy --------
 if (Sys.getenv("https_proxy") == "" && Sys.getenv("HTTPS_PROXY") == "") {
   Sys.setenv(http_proxy  = "http://proxy.ethz.ch:3128",
@@ -42,7 +47,9 @@ if (Sys.getenv("https_proxy") == "" && Sys.getenv("HTTPS_PROXY") == "") {
 user         <- Sys.getenv("USER")
 scratch      <- file.path("/cluster/scratch", user)
 path_geodata <- file.path(scratch, "GaussNiche", "geodata")
-out_dir      <- file.path(scratch, "GaussNiche", "env5d")
+# ENV_OUT_DIR lets you build to a SANDBOX (e.g. to bit-identity-check a change)
+# without clobbering the live env5d the ablation reads. Default = live env5d.
+out_dir      <- Sys.getenv("ENV_OUT_DIR", file.path(scratch, "GaussNiche", "env5d"))
 dir.create(path_geodata, recursive = TRUE, showWarnings = FALSE)
 dir.create(out_dir,      recursive = TRUE, showWarnings = FALSE)
 cand_tif <- file.path(out_dir, "env_stack_candidate.tif")
@@ -84,47 +91,75 @@ harmonise <- function(r, agg = NULL, fun = "mean") {
   terra::mask(r, tmpl)
 }
 
+# Per-block cache. A block (soil / terrain / veg / anth) is re-harmonised only
+# when its layer set (`layer_names`, the cache key) changed, or FORCE_REBUILD=1.
+# So editing ONE block's variables re-runs only that block on the next build, not
+# the whole 17-layer harmonise -- the common case when tweaking the environment
+# slightly. Bit-identical: a cached block tif == a fresh harmonise (harmonise is
+# deterministic given the geodata download cache), and the clean (no-cache) build
+# is unchanged, so this never alters env_stack_candidate.tif.
+build_block <- function(name, layer_names, builder) {
+  bt <- file.path(out_dir, paste0("block_", name, ".tif"))
+  mf <- file.path(out_dir, paste0("block_", name, ".names"))
+  if (!FORCE && file.exists(bt) && file.exists(mf) &&
+      identical(readLines(mf, warn = FALSE), layer_names)) {
+    message("  [cache hit] block '", name, "': ", paste(layer_names, collapse = ", "))
+    r <- terra::rast(bt); names(r) <- layer_names; return(r)
+  }
+  r <- builder(); names(r) <- layer_names
+  terra::writeRaster(r, bt, overwrite = TRUE); writeLines(layer_names, mf)
+  message("  [rebuilt] block '", name, "'")
+  r
+}
+
 # =============================================================================
 # 2. SOIL  (SoilGrids 2.0 via geodata; 30 arc-sec -> /20 to 10 arc-min)
 # =============================================================================
 message("\n== SOIL ==")
-soil <- terra::rast(lapply(SOIL_VARS, function(v) {
-  message("  soil_world: ", v, " (depth ", SOIL_DEPTH, " cm)")
-  r <- geodata::soil_world(var = v, depth = SOIL_DEPTH, stat = "mean", path = path_geodata)
-  harmonise(r, agg = 20)
-}))
-names(soil) <- paste0("soil_", SOIL_VARS)
+soil <- build_block("soil", paste0("soil_", SOIL_VARS), function()
+  terra::rast(lapply(SOIL_VARS, function(v) {
+    message("  soil_world: ", v, " (depth ", SOIL_DEPTH, " cm)")
+    harmonise(geodata::soil_world(var = v, depth = SOIL_DEPTH, stat = "mean",
+                                  path = path_geodata), agg = 20)
+  })))
 
 # =============================================================================
 # 3. TERRAIN  (SRTM elevation via geodata at res=10; derive on the global grid)
 # =============================================================================
 message("\n== TERRAIN ==")
-elev <- geodata::elevation_global(res = 10, path = path_geodata)
-# Aspect is circular -> split into eastness/northness before PCA. Elevation is
-# kept as a candidate even though it is lapse-rate-coupled to temperature: the
-# analysis will SHOW that correlation rather than us assuming it.
-slp  <- terra::terrain(elev, v = "slope", unit = "degrees")
-tri  <- terra::terrain(elev, v = "TRI")
-tpi  <- terra::terrain(elev, v = "TPI")
-rgh  <- terra::terrain(elev, v = "roughness")
-asp  <- terra::terrain(elev, v = "aspect", unit = "radians")
-east <- sin(asp)
-north <- cos(asp)
-terr <- c(elev, slp, tri, tpi, rgh, east, north)
-names(terr) <- c("ter_elevation", "ter_slope", "ter_TRI", "ter_TPI",
-                 "ter_roughness", "ter_eastness", "ter_northness")
-terr <- harmonise(terr)   # res=10 already: crop + snap + mask, no aggregate
+TER_NAMES <- c("ter_elevation", "ter_slope", "ter_TRI", "ter_TPI",
+               "ter_roughness", "ter_eastness", "ter_northness")
+terr <- build_block("terr", TER_NAMES, function() {
+  elev <- geodata::elevation_global(res = 10, path = path_geodata)
+  # #6a: crop to a BUFFERED European window BEFORE deriving terrain. slope/TRI/
+  # TPI/roughness use a 3x3 neighbourhood, so a generous halo (1 deg ~ 6 cells at
+  # 10 arc-min, >> the 1-cell focal radius) keeps the European cells bit-identical
+  # to deriving on the global grid; the final harmonise() mask drops the halo.
+  # Avoids running all 5 terrain passes over the whole globe (the biggest waste).
+  elev <- terra::crop(elev, terra::ext(terra::xmin(eu_ext) - 1, terra::xmax(eu_ext) + 1,
+                                       terra::ymin(eu_ext) - 1, terra::ymax(eu_ext) + 1))
+  # Aspect is circular -> split into eastness/northness before PCA. Elevation is
+  # kept even though it is lapse-rate-coupled to temperature: the analysis SHOWS
+  # that correlation rather than us assuming it.
+  asp <- terra::terrain(elev, v = "aspect", unit = "radians")
+  terr0 <- c(elev,
+             terra::terrain(elev, v = "slope", unit = "degrees"),
+             terra::terrain(elev, v = "TRI"),
+             terra::terrain(elev, v = "TPI"),
+             terra::terrain(elev, v = "roughness"),
+             sin(asp), cos(asp))
+  harmonise(terr0)   # res=10 already: crop + snap + mask, no aggregate
+})
 
 # =============================================================================
 # 4. VEGETATION  (ESA WorldCover fractions via geodata; 30 arc-sec -> /20)
 # =============================================================================
 message("\n== VEGETATION ==")
-veg <- terra::rast(lapply(VEG_VARS, function(v) {
-  message("  landcover: ", v)
-  r <- geodata::landcover(var = v, path = path_geodata)
-  harmonise(r, agg = 20)
-}))
-names(veg) <- paste0("veg_", VEG_VARS)
+veg <- build_block("veg", paste0("veg_", VEG_VARS), function()
+  terra::rast(lapply(VEG_VARS, function(v) {
+    message("  landcover: ", v)
+    harmonise(geodata::landcover(var = v, path = path_geodata), agg = 20)
+  })))
 
 # =============================================================================
 # 5. ANTHROPOGENIC  (Human Footprint via geodata; 30 arc-sec -> /20)
@@ -132,9 +167,8 @@ names(veg) <- paste0("veg_", VEG_VARS)
 anth <- NULL
 if (INCLUDE_FOOTPRINT) {
   message("\n== FOOTPRINT ==")
-  fp <- geodata::footprint(year = 2009, path = path_geodata)
-  anth <- harmonise(fp, agg = 20)
-  names(anth) <- "anth_footprint"
+  anth <- build_block("anth", "anth_footprint", function()
+    harmonise(geodata::footprint(year = 2009, path = path_geodata), agg = 20))
 }
 
 # =============================================================================

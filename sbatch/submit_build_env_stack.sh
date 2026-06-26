@@ -4,7 +4,7 @@
 #SBATCH --output=output/build-env-%j.out
 #SBATCH --error=output/build-env-%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=8G
 #SBATCH --time=06:00:00
 
@@ -31,6 +31,13 @@ export APPTAINERENV_HTTPS_PROXY="${APPTAINERENV_https_proxy}"
 
 SIF="/cluster/scratch/$USER/rocker_rstudio_4.5.sif"
 [[ -f "$SIF" ]] || { echo "Missing $SIF — run apptainer pull first."; exit 2; }
+
+# Optional overrides forwarded into the container:
+#   ENV_OUT_DIR  build to a sandbox dir (e.g. to bit-identity-check a change)
+#   FORCE_REBUILD=1  ignore the cached stack + per-block caches and rebuild all
+for v in ENV_OUT_DIR FORCE_REBUILD; do
+  if [[ -n "${!v:-}" ]]; then export "APPTAINERENV_$v=${!v}"; fi
+done
 
 apptainer exec \
   --bind "/cluster/home/$USER,/cluster/software,/cluster/scratch/$USER" \

@@ -80,6 +80,21 @@ pa_mcmc <- function(background, N_pa, pres = NULL, seed = 123,
     stop("Package 'sf' is required for pa_mcmc.")
   if (is.null(pres))     stop("pa_mcmc requires pres (presence rows).")
   if (is.null(env.rast)) stop("pa_mcmc requires 'env.rast' (the original env SpatRaster, NOT PC rasters).")
+  # Resolve a precomputed.env passed BY FILE PATH: per-worker cached load via an R
+  # option (future does not ship/reset it). INLINED (not a helper) so the logic
+  # travels with pa_mcmc when furrr ships the sampler -- a top-level helper inside
+  # the pa_samplers list is NOT recursively shipped to workers.
+  if (is.character(precomputed.env)) {
+    .pe_path  <- precomputed.env
+    .pe_cache <- getOption("gn.env.bundle.cache")
+    if (is.null(.pe_cache)) .pe_cache <- list()
+    if (is.null(.pe_cache[[.pe_path]])) {
+      if (!file.exists(.pe_path)) stop("precomputed.env path not found: ", .pe_path)
+      .pe_cache[[.pe_path]] <- readRDS(.pe_path)
+      options(gn.env.bundle.cache = .pe_cache)
+    }
+    precomputed.env <- .pe_cache[[.pe_path]]
+  }
 
   set.seed(seed)
   pres_sf <- sf::st_as_sf(pres[, c("x", "y"), drop = FALSE],
@@ -280,7 +295,39 @@ compute_bandwidth_nd <- function(dt, pc_cols = NULL) {
 #' @param bw          Pre-computed length-k bandwidth (compute_bandwidth_nd()).
 #' @param pa_env_rast SpatRaster forwarded to samplers as env.rast (ORIGINAL vars).
 #' @param hv_quantile Probability quantile for hypervolume_gaussian (default 0.95).
+#' @param sdm_hook   Optional closure (see make_sdm_hook() in hsm_eval.R) called
+#'                   once per (sampler, realisation) on the already-drawn PA set
+#'                   to fit + score downstream HSMs, returning a tidy stats df
+#'                   collected into the result's $hsm slot. NULL (default) ->
+#'                   byte-identical behaviour to before (no SDM fitting). The
+#'                   hook's RNG use is isolated (save/restore .Random.seed) so the
+#'                   hypervolume diagnostics are unaffected.
+#' @param compute_hypervolume Logical (default TRUE). When FALSE, the two
+#'                   hypervolume_gaussian() calls (the dominant 5-D cost, ~70% of
+#'                   a task) and the overlap metric are SKIPPED -- overlap is
+#'                   recorded NA while per-axis coverage / prop-true-abs and the
+#'                   sdm_hook still run. Use for downstream-HSM-only tuning sweeps
+#'                   where the sampling diagnostics are not needed.
+#' @param make_plots Logical (default TRUE). When FALSE, the per-call ggplot / KDE
+#'                   / projection objects (response curves, the PC1xPC2 niche
+#'                   projection, and the per-sampler PA / boxplot / bias plots) are
+#'                   NOT built -- the numeric pipeline (metrics + sdm_hook) is
+#'                   unchanged and the plot slots return NULL. Saves ~20-35 s per
+#'                   call; use for sweeps that only consume $hsm / metrics.
+#' @param compute_reference Logical (default TRUE). When FALSE, the one-off
+#'                   reference pseudo-absence draw per sampler (used only for the
+#'                   per-sampler reference plots / the $pseudo_ref / $dataset
+#'                   slots) is SKIPPED -- those slots return NULL while $metrics
+#'                   and $hsm are unchanged. For a sweep that draws an mcmc
+#'                   reference, this saves ~one pa_mcmc call (incl. a GMM fit) per
+#'                   call. Keep TRUE for run_5d_experiment.R (its geo-grid /
+#'                   pc-matrix figures need $pseudo_ref).
 #' @param verbose / parallel / n_workers  As in the 2-D module.
+#' @param manage_plan Logical (default TRUE). When FALSE and parallel = TRUE, the
+#'                   function does NOT call future::plan()/reset -- the caller is
+#'                   responsible for setting up (and tearing down) the worker pool.
+#'                   Set FALSE when calling this many times in a loop (e.g. a tuning
+#'                   sweep) so the 16 workers are spawned ONCE, not per call.
 #' @param ...         Extra args forwarded to samplers (e.g. dimensions=,
 #'                    chain.length=, burnIn= for pa_mcmc).
 #' @return Named list: niche, parameters, suit_rast, pa_rast, response_curves,
@@ -299,9 +346,14 @@ virtualSpecies_nd <- function(
     bw               = NULL,
     pa_env_rast      = NULL,
     hv_quantile      = 0.95,
+    sdm_hook         = NULL,
+    compute_hypervolume = TRUE,
+    make_plots       = TRUE,
+    compute_reference = TRUE,
     verbose          = TRUE,
     parallel         = FALSE,
     n_workers        = NULL,
+    manage_plan      = TRUE,
     ...
 ) {
   if (is.null(pa_env_rast)) pa_env_rast <- envData
@@ -311,15 +363,29 @@ virtualSpecies_nd <- function(
   if (is.null(pc_labs)) pc_labs <- pc_cols
   names(pc_labs) <- pc_cols
 
+  # Force Mersenne-Twister for THIS call's RNG. The Bernoulli draws (pa_matrix)
+  # and any reference draw use set.seed() WITHOUT a kind, so they would inherit
+  # whatever generator the caller left active -- and a furrr worker runs under
+  # L'Ecuyer-CMRG (furrr_options(seed = TRUE)). Pinning MT here makes results
+  # identical whether this runs in the main process or inside a future worker
+  # (eval_realization already pins MT per task). No-op for the main-process paths.
+  RNGkind("Mersenne-Twister")
+
   # ---- 0. parallel backend ------------------------------------------------
   if (parallel) {
     if (!requireNamespace("future", quietly = TRUE) ||
         !requireNamespace("furrr", quietly = TRUE))
       stop("parallel = TRUE requires 'future' and 'furrr'.")
     if (is.null(n_workers)) n_workers <- 4L
-    old_plan <- future::plan(future::multisession, workers = n_workers)
-    on.exit(future::plan(old_plan), add = TRUE)
-    if (verbose) cat("Parallel mode:", n_workers, "workers\n")
+    # manage_plan = FALSE lets the caller set up the future plan ONCE and reuse
+    # the worker pool across many calls (e.g. a sweep that calls this 64x) -- the
+    # per-call worker re-spawn + global re-ship is otherwise the dominant cost.
+    if (manage_plan) {
+      old_plan <- future::plan(future::multisession, workers = n_workers)
+      on.exit(future::plan(old_plan), add = TRUE)
+    }
+    if (verbose) cat("Parallel mode:", n_workers, "workers",
+                     if (!manage_plan) "(caller-managed plan)" else "", "\n")
   }
 
   # ---- 1. k-D Gaussian niche ----------------------------------------------
@@ -339,30 +405,33 @@ virtualSpecies_nd <- function(
     data.frame(x = xs, suit = exp(-0.5 * (xs - mu[i])^2 / marg_sd[i]^2))
   })
   names(rc_data) <- pc_cols
-  rc_plots <- lapply(seq_len(k), function(i) {
-    ggplot(rc_data[[i]], aes(x = x, y = suit)) +
-      geom_line(colour = "firebrick", linewidth = 1) +
-      geom_rug(data = dt, aes(x = .data[[pc_cols[i]]]), inherit.aes = FALSE,
-               alpha = 0.04, colour = "grey40", length = unit(0.02, "npc")) +
-      labs(title = paste0("Marginal response — ", pc_cols[i]),
-           subtitle = sprintf("mu=%.2f, sigma=%.2f", mu[i], sigma[i]),
-           x = pc_labs[[pc_cols[i]]], y = "Suitability [0,1]") +
-      theme_classic(base_size = 12)
-  })
-  names(rc_plots) <- paste0("p_rc_", pc_cols)
+  rc_plots <- rc_logit_plots <- NULL
+  if (make_plots) {
+    rc_plots <- lapply(seq_len(k), function(i) {
+      ggplot(rc_data[[i]], aes(x = x, y = suit)) +
+        geom_line(colour = "firebrick", linewidth = 1) +
+        geom_rug(data = dt, aes(x = .data[[pc_cols[i]]]), inherit.aes = FALSE,
+                 alpha = 0.04, colour = "grey40", length = unit(0.02, "npc")) +
+        labs(title = paste0("Marginal response — ", pc_cols[i]),
+             subtitle = sprintf("mu=%.2f, sigma=%.2f", mu[i], sigma[i]),
+             x = pc_labs[[pc_cols[i]]], y = "Suitability [0,1]") +
+        theme_classic(base_size = 12)
+    })
+    names(rc_plots) <- paste0("p_rc_", pc_cols)
 
-  # logit response curves per axis: logit(suit) = log(suit/(1-suit)), finite only
-  rc_logit_plots <- lapply(seq_len(k), function(i) {
-    d <- rc_data[[i]]; d$logit <- log(d$suit / (1 - d$suit))
-    d <- d[is.finite(d$logit), , drop = FALSE]
-    ggplot(d, aes(x = x, y = logit)) +
-      geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
-      geom_line(colour = "steelblue", linewidth = 1) +
-      labs(title = paste0("Logit(suit) — ", pc_cols[i]),
-           x = pc_labs[[pc_cols[i]]], y = "logit(suit)") +
-      theme_classic(base_size = 12)
-  })
-  names(rc_logit_plots) <- paste0("p_rc_logit_", pc_cols)
+    # logit response curves per axis: logit(suit) = log(suit/(1-suit)), finite only
+    rc_logit_plots <- lapply(seq_len(k), function(i) {
+      d <- rc_data[[i]]; d$logit <- log(d$suit / (1 - d$suit))
+      d <- d[is.finite(d$logit), , drop = FALSE]
+      ggplot(d, aes(x = x, y = logit)) +
+        geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
+        geom_line(colour = "steelblue", linewidth = 1) +
+        labs(title = paste0("Logit(suit) — ", pc_cols[i]),
+             x = pc_labs[[pc_cols[i]]], y = "logit(suit)") +
+        theme_classic(base_size = 12)
+    })
+    names(rc_logit_plots) <- paste0("p_rc_logit_", pc_cols)
+  }
 
   # equation string (generic quadratic form)
   eq_nd <- sprintf("log(suit) = -0.5 * (x-mu)^T Sigma^-1 (x-mu);  k=%d, mu=(%s), sigma=(%s)",
@@ -398,35 +467,38 @@ virtualSpecies_nd <- function(
 
   # ---- 5. PC1 x PC2 projection plots --------------------------------------
   px <- pc_cols[1]; py <- pc_cols[2]
-  kde_raw <- MASS::kde2d(dt[[px]], dt[[py]], n = 150L)
-  kde_df  <- expand.grid(X = kde_raw$x, Y = kde_raw$y)
-  kde_df$density <- as.vector(kde_raw$z); kde_df$density <- kde_df$density / max(kde_df$density)
+  kde_df <- grid_xy <- p_niche <- NULL
+  if (make_plots) {
+    kde_raw <- MASS::kde2d(dt[[px]], dt[[py]], n = 150L)
+    kde_df  <- expand.grid(X = kde_raw$x, Y = kde_raw$y)
+    kde_df$density <- as.vector(kde_raw$z); kde_df$density <- kde_df$density / max(kde_df$density)
 
-  # suitability sliced at mu on the non-displayed axes
-  grid_xy <- expand.grid(
-    X = seq(min(dt[[px]]), max(dt[[px]]), length.out = 200L),
-    Y = seq(min(dt[[py]]), max(dt[[py]]), length.out = 200L))
-  slice <- matrix(rep(mu, each = nrow(grid_xy)), nrow = nrow(grid_xy))
-  colnames(slice) <- pc_cols
-  slice[, px] <- grid_xy$X; slice[, py] <- grid_xy$Y
-  grid_xy$suit <- mvtnorm::dmvnorm(slice[, pc_cols], mean = mu, sigma = Sigma) / peak
+    # suitability sliced at mu on the non-displayed axes
+    grid_xy <- expand.grid(
+      X = seq(min(dt[[px]]), max(dt[[px]]), length.out = 200L),
+      Y = seq(min(dt[[py]]), max(dt[[py]]), length.out = 200L))
+    slice <- matrix(rep(mu, each = nrow(grid_xy)), nrow = nrow(grid_xy))
+    colnames(slice) <- pc_cols
+    slice[, px] <- grid_xy$X; slice[, py] <- grid_xy$Y
+    grid_xy$suit <- mvtnorm::dmvnorm(slice[, pc_cols], mean = mu, sigma = Sigma) / peak
 
-  p_niche <- ggplot() +
-    geom_contour_filled(data = kde_df, aes(X, Y, z = density),
-                        breaks = c(0, 0.05, 0.25, 0.5, 0.75, 1), alpha = 0.8) +
-    scale_fill_viridis_d(option = "mako", name = "Background\ndensity", direction = -1) +
-    geom_contour(data = grid_xy, aes(X, Y, z = suit), colour = "firebrick",
-                 linewidth = 0.6, breaks = c(0.1, 0.25, 0.5, 0.75, 0.95)) +
-    geom_point(data = ref_pres, aes(.data[[px]], .data[[py]]),
-               colour = "grey30", alpha = 0.25, size = 0.5) +
-    annotate("point", x = mu[1], y = mu[2], colour = "firebrick", shape = 3,
-             size = 4, stroke = 2) +
-    coord_equal() +
-    labs(title = "Niche vs available environment (PC1 x PC2 projection)",
-         subtitle = paste0("Suitability sliced at mu on PC3..PC", k,
-                           "  |  + = optimum  |  dots = presences"),
-         x = pc_labs[[px]], y = pc_labs[[py]]) +
-    theme_classic(base_size = 12)
+    p_niche <- ggplot() +
+      geom_contour_filled(data = kde_df, aes(X, Y, z = density),
+                          breaks = c(0, 0.05, 0.25, 0.5, 0.75, 1), alpha = 0.8) +
+      scale_fill_viridis_d(option = "mako", name = "Background\ndensity", direction = -1) +
+      geom_contour(data = grid_xy, aes(X, Y, z = suit), colour = "firebrick",
+                   linewidth = 0.6, breaks = c(0.1, 0.25, 0.5, 0.75, 0.95)) +
+      geom_point(data = ref_pres, aes(.data[[px]], .data[[py]]),
+                 colour = "grey30", alpha = 0.25, size = 0.5) +
+      annotate("point", x = mu[1], y = mu[2], colour = "firebrick", shape = 3,
+               size = 4, stroke = 2) +
+      coord_equal() +
+      labs(title = "Niche vs available environment (PC1 x PC2 projection)",
+           subtitle = paste0("Suitability sliced at mu on PC3..PC", k,
+                             "  |  + = optimum  |  dots = presences"),
+           x = pc_labs[[px]], y = pc_labs[[py]]) +
+      theme_classic(base_size = 12)
+  }
 
   # ---- 6. metrics-row builder (dynamic per-PC coverage columns) ------------
   relcov_names <- paste0("rel_cov_", pc_cols)
@@ -441,16 +513,26 @@ virtualSpecies_nd <- function(
   }
 
   # ---- 7. reference pseudo-absences per sampler ---------------------------
+  # The reference draw feeds only the per-sampler reference plots and the
+  # $pseudo_ref / $dataset slots; a downstream-HSM sweep (compute_reference =
+  # FALSE) reads neither, so this extra pa_* call (an mcmc reference includes a
+  # GMM fit) is skipped there.
   N_pa_ref <- max(1L, round(nrow(ref_pres) / bgk_prev))
   dot_args <- list(...)
-  pseudo_refs <- lapply(names(pa_samplers), function(s) {
-    if (verbose) cat("== reference PA:", s, "==\n")
-    do.call(pa_samplers[[s]], c(list(background = dt, N_pa = N_pa_ref, pres = ref_pres,
-                                     seed = seed_pseudo_base, env.rast = pa_env_rast), dot_args))
-  })
-  names(pseudo_refs) <- names(pa_samplers)
+  pseudo_refs <- if (compute_reference)
+    setNames(lapply(names(pa_samplers), function(s) {
+      if (verbose) cat("== reference PA:", s, "==\n")
+      do.call(pa_samplers[[s]], c(list(background = dt, N_pa = N_pa_ref, pres = ref_pres,
+                                       seed = seed_pseudo_base, env.rast = pa_env_rast), dot_args))
+    }), names(pa_samplers))
+  else setNames(vector("list", length(pa_samplers)), names(pa_samplers))
 
-  pa_env_packed <- if (parallel) terra::wrap(pa_env_rast) else NULL
+  # env.rast is only consumed by the inline KDE/MCMC samplers (they run rastPCA);
+  # when precomputed.env is supplied they ignore it (USE.MCMC paSamplingMcmc.R),
+  # so skip the per-task wrap/unwrap of the full env SpatRaster -- dead weight that
+  # every parallel task would otherwise deserialise for nothing.
+  needs_env_rast <- is.null(dot_args$precomputed.env)
+  pa_env_packed  <- if (parallel && needs_env_rast) terra::wrap(pa_env_rast) else NULL
 
   # ---- 8. one (sampler, realisation) task ---------------------------------
   eval_realization <- function(s_name, r) {
@@ -463,32 +545,60 @@ virtualSpecies_nd <- function(
       pres_r_all[sample(nrow(pres_r_all), max_pres), ] else pres_r_all
     N_pa_r <- max(1L, round(nrow(pres_r) / bgk_prev))
     if (nrow(pres_r) < 5L || N_pa_r < 5L)
-      return(make_row(r, "skip_few_pres", nrow(pres_r_all), nrow(pres_r)))
+      return(list(metric_row = make_row(r, "skip_few_pres", nrow(pres_r_all), nrow(pres_r)),
+                  hsm_rows = NULL))
 
     task_dot <- dot_args
     if (parallel && s_name == "mcmc") task_dot$num.cores <- 1L
-    env_for_task <- if (parallel) terra::unwrap(pa_env_packed) else pa_env_rast
+    env_for_task <- if (parallel && needs_env_rast) terra::unwrap(pa_env_packed) else pa_env_rast
 
     pseudo_r <- tryCatch(
       do.call(pa_samplers[[s_name]], c(list(background = dt, N_pa = N_pa_r, pres = pres_r,
               seed = seed_pseudo_base + r, env.rast = env_for_task), task_dot)),
       error = function(e) NULL)
     if (is.null(pseudo_r) || nrow(pseudo_r) < 5L)
-      return(make_row(r, "skip_sampler_null_or_short", nrow(pres_r_all), nrow(pres_r)))
+      return(list(metric_row = make_row(r, "skip_sampler_null_or_short",
+                                        nrow(pres_r_all), nrow(pres_r)),
+                  hsm_rows = NULL))
 
-    hv_pres <- tryCatch(hypervolume::hypervolume_gaussian(
-      pres_r[, pc_cols], kde.bandwidth = bw, sd.count = 3,
-      quantile.requested = hv_quantile, quantile.requested.type = "probability",
-      chunk.size = 1000L, verbose = FALSE), error = function(e) NULL)
-    hv_pa <- tryCatch(hypervolume::hypervolume_gaussian(
-      pseudo_r[, pc_cols], kde.bandwidth = bw, sd.count = 3,
-      quantile.requested = hv_quantile, quantile.requested.type = "probability",
-      chunk.size = 1000L, verbose = FALSE), error = function(e) NULL)
-    if (is.null(hv_pres) || is.null(hv_pa))
-      return(make_row(r, "skip_hv_fail", nrow(pres_r_all), nrow(pres_r)))
+    # ---- optional downstream SDM hook (single-pass reuse of THIS PA set) -----
+    # Called BEFORE the hypervolume calls so the SDM rows survive a skip_hv_fail.
+    # The hook's RNG consumption is fully isolated (save/restore .Random.seed) so
+    # the subsequent hypervolume draws are byte-identical to the no-hook run ->
+    # the committed overlap/coverage/prop_true_abs are preserved.
+    hsm_rows <- NULL
+    if (!is.null(sdm_hook)) {
+      .seed_backup <- if (exists(".Random.seed", envir = .GlobalEnv))
+        get(".Random.seed", envir = .GlobalEnv) else NULL
+      hsm_rows <- tryCatch(
+        sdm_hook(pres_r = pres_r, pseudo_r = pseudo_r, background = dt,
+                 pc_cols = pc_cols, realization = r, sampler = s_name),
+        error = function(e) NULL)
+      if (!is.null(.seed_backup))
+        assign(".Random.seed", .seed_backup, envir = .GlobalEnv)
+      else if (exists(".Random.seed", envir = .GlobalEnv))
+        rm(list = ".Random.seed", envir = .GlobalEnv)
+    }
 
-    hv_set <- hypervolume::hypervolume_set(hv_pres, hv_pa, check.memory = FALSE, verbose = FALSE)
-    ovrlp  <- hypervolume::get_volume(hv_set)[[3L]]
+    # Hypervolume overlap (the dominant 5-D cost) -- skippable for HSM-only sweeps.
+    if (compute_hypervolume) {
+      hv_pres <- tryCatch(hypervolume::hypervolume_gaussian(
+        pres_r[, pc_cols], kde.bandwidth = bw, sd.count = 3,
+        quantile.requested = hv_quantile, quantile.requested.type = "probability",
+        chunk.size = 1000L, verbose = FALSE), error = function(e) NULL)
+      hv_pa <- tryCatch(hypervolume::hypervolume_gaussian(
+        pseudo_r[, pc_cols], kde.bandwidth = bw, sd.count = 3,
+        quantile.requested = hv_quantile, quantile.requested.type = "probability",
+        chunk.size = 1000L, verbose = FALSE), error = function(e) NULL)
+      if (is.null(hv_pres) || is.null(hv_pa))
+        return(list(metric_row = make_row(r, "skip_hv_fail", nrow(pres_r_all), nrow(pres_r)),
+                    hsm_rows = hsm_rows))
+      hv_set <- hypervolume::hypervolume_set(hv_pres, hv_pa, check.memory = FALSE, verbose = FALSE)
+      ovrlp  <- hypervolume::get_volume(hv_set)[[3L]]
+      rm(hv_pres, hv_pa, hv_set)
+    } else {
+      ovrlp <- NA_real_
+    }
 
     relcov <- setNames(vapply(pc_cols, function(pc)
       diff(range(pseudo_r[[pc]])) / bg_range[[pc]], numeric(1)), relcov_names)
@@ -499,8 +609,11 @@ virtualSpecies_nd <- function(
 
     row <- make_row(r, "ok", nrow(pres_r_all), nrow(pres_r), nrow(pseudo_r),
                     round(ovrlp, 6L), round(prop_ta, 4L), round(relcov, 4L))
-    rm(hv_pres, hv_pa, hv_set, pseudo_r, pres_r, pres_r_all, true_abs_r); gc(verbose = FALSE)
-    row
+    rm(pseudo_r, pres_r, pres_r_all, true_abs_r)
+    # The stop-the-world gc only earns its latency when the big hypervolume
+    # objects were allocated; on an HSM-only sweep it just stalls the worker.
+    if (compute_hypervolume) gc(verbose = FALSE)
+    list(metric_row = row, hsm_rows = hsm_rows)
   }
 
   # ---- 9. dispatch --------------------------------------------------------
@@ -513,7 +626,13 @@ virtualSpecies_nd <- function(
                        .options = furrr::furrr_options(seed = TRUE, globals = TRUE),
                        .progress = verbose)
   else Map(eval_realization, tasks$s_name, tasks$r)
-  results_by_sampler <- split(results, factor(tasks$s_name, levels = names(pa_samplers)))
+  # eval_realization now returns list(metric_row, hsm_rows): split the metric rows
+  # by sampler (unchanged downstream) and collect the optional SDM stats separately.
+  metric_rows  <- lapply(results, `[[`, "metric_row")
+  hsm_rows_all <- lapply(results, `[[`, "hsm_rows")
+  results_by_sampler <- split(metric_rows, factor(tasks$s_name, levels = names(pa_samplers)))
+  has_hsm <- !vapply(hsm_rows_all, is.null, logical(1))
+  hsm_df  <- if (any(has_hsm)) do.call(rbind, hsm_rows_all[has_hsm]) else NULL
 
   # ---- 10. per-sampler assembly + plots -----------------------------------
   sampler_results <- vector("list", length(pa_samplers))
@@ -530,7 +649,10 @@ virtualSpecies_nd <- function(
                   paste(sprintf("%s=%d", names(tally), as.integer(tally)), collapse = "  ")))
     }
 
-    # reference-realisation scalar diagnostics for the PA-plot annotation
+    # reference-realisation scalar diagnostics + plots. Skipped when !make_plots,
+    # or when there is no reference draw (compute_reference = FALSE) to plot.
+    splots <- NULL
+    if (make_plots && !is.null(pseudo_ref)) {
     med_ovrlp   <- if (nrow(metrics_ok) > 0L) round(median(metrics_ok$overlap, na.rm = TRUE), 3L) else NA_real_
     ref_ta_key  <- paste(round(dt$x[ref_pa == 0L], 4L), round(dt$y[ref_pa == 0L], 4L))
     pref_key    <- paste(round(pseudo_ref$x, 4L), round(pseudo_ref$y, 4L))
@@ -603,17 +725,25 @@ virtualSpecies_nd <- function(
              x = pc_labs[[pc]], y = "Density", colour = NULL, fill = NULL) +
         theme_classic(base_size = 11) + theme(legend.position = "bottom")
     }), pc_cols)
+    splots <- list(p_pa = p_pa, p_box_overlap = p_box_overlap,
+                   p_box_coverage = p_box_coverage, p_box_trueabs = p_box_trueabs,
+                   p_bias = p_bias)
+    }  # end if (make_plots)
 
-    pres_out <- ref_pres[, c("x", "y", pc_cols, "suit")]; pres_out$pa <- 1L
-    pa_out   <- pseudo_ref[, c("x", "y", pc_cols, "suit")]; pa_out$pa <- 0L
-    sampler_results[[s_name]] <- list(
-      pseudo_ref  = pseudo_ref,
-      pseudo_vect = terra::vect(pseudo_ref, geom = c("x", "y"), crs = terra::crs(envData)),
-      dataset     = rbind(pres_out, pa_out),
-      metrics     = metrics_df,
-      plots       = list(p_pa = p_pa, p_box_overlap = p_box_overlap,
-                         p_box_coverage = p_box_coverage, p_box_trueabs = p_box_trueabs,
-                         p_bias = p_bias))
+    if (is.null(pseudo_ref)) {
+      # compute_reference = FALSE: no reference cloud -> reference-only slots NULL.
+      sampler_results[[s_name]] <- list(pseudo_ref = NULL, pseudo_vect = NULL,
+        dataset = NULL, metrics = metrics_df, plots = splots)
+    } else {
+      pres_out <- ref_pres[, c("x", "y", pc_cols, "suit")]; pres_out$pa <- 1L
+      pa_out   <- pseudo_ref[, c("x", "y", pc_cols, "suit")]; pa_out$pa <- 0L
+      sampler_results[[s_name]] <- list(
+        pseudo_ref  = pseudo_ref,
+        pseudo_vect = terra::vect(pseudo_ref, geom = c("x", "y"), crs = terra::crs(envData)),
+        dataset     = rbind(pres_out, pa_out),
+        metrics     = metrics_df,
+        plots       = splots)
+    }
   }
 
   # ---- 11. geographic rasters (reference realisation) ---------------------
@@ -638,6 +768,7 @@ virtualSpecies_nd <- function(
     suit_rast = suit_rast, pa_rast = pa_rast,
     response_curves = list(data = rc_data, plots = rc_plots, logit_plots = rc_logit_plots),
     samplers = sampler_results,
+    hsm = hsm_df,
     plots = list(p_niche = p_niche),
     bw = bw, background = dt)
 }

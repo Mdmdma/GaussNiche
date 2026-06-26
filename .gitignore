@@ -7,3 +7,11 @@ output/
 
 # vendored python deps (regenerate with: python3 vendor_pypdf.py)
 pylib/
+
+# Large raw per-realisation HSM/ablation metric dumps (multi-MB, regenerable).
+# The full rows are also embedded in the committed summary_*.rds, and the figures
+# + small summary CSVs in the same dirs are the durable in-repo artifacts.
+# Regenerate a CSV from the rds, e.g.:
+#   write.csv(readRDS("results/5d_tune/summary_tune_grid.rds")$tune, "out.csv", row.names=FALSE)
+results/5d_hsm/hsm_metrics_5d_*.csv
+results/5d_tune/tune_hsm_metrics_5d_*.csv

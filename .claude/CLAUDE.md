@@ -20,14 +20,20 @@ containerised R) consult the relevant skill before running anything:
 If neither applies (plain Linux/macOS workstation), the rest of this file
 is all you need.
 
-One **task** skill is host-independent (load it on demand, not gated by host):
+Two **task** skills are host-independent (load on demand, not gated by host):
 
-- `.claude/skills/publication-figures/SKILL.md` — regenerate the
-  markov-chain-sampler paper's in-scope figures (the Results sampler-comparison
-  "distribution of PC values" plot and the appendix MCMC diagnostics:
-  autocorrelation, Gelman-Rubin, trace/posterior) as publication-ready artifacts,
-  written under the exact filenames the sibling manuscript's `\includegraphics`
-  paths require.
+- `.claude/skills/publication-figures/SKILL.md` — authoritative guide to ALL
+  figures in the markov-chain-sampler paper and its downstream-HSM report: Part A
+  the appendix MCMC diagnostics (autocorrelation / Gelman-Rubin / trace, from the
+  USE.MCMC vignette) and Part B the GaussNiche-produced figures (§2.3
+  sampler-comparison boxplots, PC-matrix / geo-grid, hsm_full_report, the
+  cross-species aggregates, the Dunn summary, the uniform+ ablation heatmaps),
+  with the figure→producer→destination map + the copy-by-hand-into-`graphics/`
+  convention.
+- `.claude/skills/hsm-ablation/SKILL.md` — run / recompute / extend / interpret
+  the uniform+ (pa_mcmc) settings ablation (environmental.cutof.percentile ×
+  species.cutoff.threshold sweep vs the fixed RND/buffer baseline). Read it when
+  the environment changes and the ablation must be recomputed, or to tune uniform+.
 
 ---
 
@@ -111,11 +117,57 @@ GaussNiche/
 │                                  'lean_natural', 5 PCs; samplers RND/buffer-out/
 │                                  uniform+ — USE omitted, it is 2-D-only). Via
 │                                  sbatch/submit_5d_experiment.sh → results5d_experiment.
+├── run_5d_hsm.R                   DOWNSTREAM-HSM arm (appendix): same 4 species /
+│                                  3 samplers / R=50 / IDENTICAL seeds as
+│                                  run_5d_experiment.R, but fits the 5 USE model
+│                                  families (GLM/GAM/RF/BRT/Maxent, Java-free) to
+│                                  each realisation on TWO predictor sets (5 PCs +
+│                                  12 raw layers) via the sdm_hook, scoring
+│                                  internal (held-out) AND truth-based accuracy.
+│                                  Writes hsm_metrics/dunn/violins to
+│                                  results5d_hsm (no 90 MB result rds). Via
+│                                  sbatch/submit_5d_hsm.sh (deps:
+│                                  sbatch/submit_install_hsm_deps.sh first).
+├── tune_5d_hsm.R                  uniform+ settings ABLATION sweep (appendix): a
+│                                  grid of pa_mcmc knobs (environmental.cutof.percentile
+│                                  x species.cutoff.threshold) scoring downstream HSM
+│                                  metrics vs the fixed RND/buffer baseline. Speedups
+│                                  A1-A4 baked in (uniform+ only / compute_hypervolume=
+│                                  FALSE / pc5 only / 25 reals); sets the furrr plan
+│                                  ONCE (manage_plan=FALSE) across all 64 calls. Emits
+│                                  per-cell median table + value/Δ-vs-RND heatmaps to
+│                                  results5d_tune. Via sbatch/submit_tune_5d_hsm.sh.
+├── bench_hsm.R                    single-threaded profiler decomposing one
+│                                  realisation's cost (sampler / hypervolume / SDM
+│                                  hook / background-predict) — measured that the 5-D
+│                                  hypervolume_gaussian is ~70% of a task. Via
+│                                  sbatch/submit_bench_hsm.sh.
 ├── experiment_plots.R             dimension-agnostic metric boxplots (overlap /
 │                                  per-axis range coverage / prop true-absence).
 │                                  Consumes virtualSpecies() AND
 │                                  virtualSpecies_nd() results; discovers
 │                                  samplers + rel_cov_* axes at runtime.
+├── hsm_eval.R                     downstream HSM library: fit_hsms / per-algo
+│                                  predict + metrics / boyce_index (CBI reimpl) /
+│                                  make_sdm_hook() (the closure run_5d_hsm.R passes
+│                                  to virtualSpecies_nd(sdm_hook=)). GLM is LINEAR
+│                                  (USE-faithful; a quadratic GLM is oracle on a
+│                                  Gaussian niche → sampler-blind). Maxent = maxnet
+│                                  (no Java). Every backend tryCatch→NA.
+├── hsm_plots.R                    downstream comparison figures (USE 2_ViolinPlots
+│                                  + 3_DunnTest port): plot_hsm_violin (metric ×
+│                                  algorithm by sampler), hsm_dunn_test (uniform+ vs
+│                                  others, WITHIN-species, holm), summarize_hsm,
+│                                  plot_hsm_species_overlay/_row (cross-species agg:
+│                                  hue=sampler/shade=species), plot_tune_heatmap
+│                                  (knob-sweep heatmaps), plot_hsm_species_metrics +
+│                                  hsm_win_matrix/plot_hsm_win_matrix (all-metrics
+│                                  violins + where-uniform+-beats-naive matrix).
+│                                  Reuses experiment_plots.R sampler colours.
+├── hsm_report.R                   builds a scrollable multi-page PDF from a 3-sampler
+│                                  HSM CSV (results5d_hsm): overview medians, the win
+│                                  matrix per predictor set, and per-species all-metrics
+│                                  violin grids + hsm_win_matrix.csv.
 ├── pa_buffer.R                    geographic "buffer-out" PA sampler (excl. cells
 │                                  within 50 km of presences; EPSG:3035 distance).
 │                                  Dimension-agnostic spatial baseline; add to any
@@ -156,6 +208,13 @@ Re-render without recomputing via `sbatch --export=ALL,MODE=figures
 sbatch/submit_5d_experiment.sh`. The paper's `CLAUDE.md` holds the full
 figure→producer map for both repos.
 
+`run_5d_hsm.R` additionally produces the **appendix** downstream-HSM figures
+(`hsm_violin_{pc5,raw12}_*.pdf`, `hsm_dunn_summary_5d_*.pdf`) + the
+`hsm_metrics_5d_full.csv` / `hsm_dunn_5d_full.csv` tables under
+`<scratch>/GaussNiche/results5d_hsm/`, hand-copied into the paper's `graphics/`
+for `text/appendix/appendix.tex` (same copy-by-hand convention as the other
+GaussNiche figures).
+
 ## Higher-dimensional environment (the `5d-niche` extension)
 
 These files keep the 2-D pipeline above intact (as the reference) and add a
@@ -168,6 +227,12 @@ WorldClim 10 arc-min Central/W-Europe grid. Files added (portable R; the
 
 - `build_env_stack.R`    download + harmonise a broad candidate pool (clim/soil/
                          ter/veg/anth) onto the baseline grid; cache to scratch.
+                         INCREMENTAL: each block is cached to block_<name>.tif keyed
+                         by its layer set, so a SLIGHT env change re-harmonises only
+                         the changed block; terrain is derived on a buffered Europe
+                         crop (not the globe). Both bit-identical to a clean build
+                         (validated: 41 s vs the old multi-hour build). Overrides:
+                         FORCE_REBUILD=1, ENV_OUT_DIR=<sandbox>.
 - `analyze_env_stack.R`  per-variable stats, correlation/VIF, per-block
                          orthogonality-to-climate, full PCA with cumulative-80 /
                          Kaiser / broken-stick "useful PC" criteria, forward block
@@ -187,6 +252,24 @@ WorldClim 10 arc-min Central/W-Europe grid. Files added (portable R; the
                          via `pa_samplers = list(random = pa_random, mcmc =
                          pa_mcmc, nn = pa_nn)`. Only the KDE backend
                          `USE.MCMC::paSampling` remains 2-D-only.
+                         `virtualSpecies_nd()` also accepts an optional
+                         `sdm_hook=` closure (default NULL → byte-identical to
+                         before): called once per (sampler, realisation) on the
+                         already-drawn PA set to fit downstream HSMs, its tidy
+                         rows collected into the result's `$hsm` slot. The hook's
+                         RNG is isolated (save/restore `.Random.seed`) so the
+                         hypervolume diagnostics are unperturbed. See hsm_eval.R.
+                         Perf flags (all default to the original behaviour ->
+                         run_5d_* unchanged): `compute_hypervolume=FALSE` skips the
+                         2 hypervolume_gaussian() calls (~70% of a 5-D task;
+                         overlap->NA); `make_plots=FALSE` skips the per-call
+                         ggplot/KDE/projection objects; `compute_reference=FALSE`
+                         skips the one-off reference-PA draw per sampler;
+                         `manage_plan=FALSE` lets the caller own the future plan.
+                         pa_mcmc also takes `precomputed.env` as a FILE PATH
+                         (inlined per-worker cache) so a sweep ships a string, not
+                         the multi-MB bundle, to each worker. See the "Downstream
+                         HSM ... running it fast" section below for the full why.
 - `5_highdim_species.R`  the 4 species in 5-D; mu/sigma as multiples of each PC's
                          background sd (generalist σ=1.0·sd / specialist σ=0.5·sd;
                          common μ = KDE mode of the 5-D background / rare μ = fixed
@@ -206,6 +289,76 @@ bandwidth operate on the k PC columns; niche & PA plots are drawn on the PC1×PC
 *projection* (suitability sliced at μ); coverage is reported per axis
 (`rel_cov_PC1…PCk`). All heavy steps run on SLURM via the `sbatch/submit_*.sh` scripts
 (apptainer + the rocker SIF), never the login node.
+
+## Downstream HSM, the uniform+ ablation, and running it fast (what & why)
+
+Read this to understand *what* the recent work is and *why* it is shaped the way
+it is — it is the fast on-ramp for anyone picking this up.
+
+**The research arc (what we're doing).** Beyond the sampling-quality diagnostics,
+the goal is to reproduce the USE paper's *downstream* test in 5-D: fit the same 5
+HSM families (GLM/GAM/RF/BRT/Maxent, Java-free) to each Bernoulli realisation of
+the 4 species under each sampler, and ask whether **uniform+ (`pa_mcmc`) yields
+better species-distribution models** than the naive samplers (RND, buffer-out).
+Settled finding: **uniform+ beats the naive samplers on discrimination
+(AUC/TSS/Sensitivity/Kappa) but loses on truth-recovery (cor/RMSE-to-known-
+suitability, CBI)** — random pseudo-absences reconstruct the true surface best.
+The **ablation** (`tune_5d_hsm.R`) sweeps the two `pa_mcmc` cutoffs to test whether
+tuning closes that gap: it does not — the gap narrows ~50 % then the sampler
+degenerates (`environmental.cutof.percentile` ≥ 0.2 yields no valid PAs). So the
+deficit is **structural to environmental-uniform sampling**, framed as an
+objective-dependent trade-off. Full detail + how to recompute on an env change:
+the **hsm-ablation** skill. The figures it produces: the **publication-figures** skill.
+
+**Where the time goes (cost model, measured by `bench_hsm.R`).** Per 5-D
+realisation, single-threaded: `hypervolume_gaussian` ×2 ≈ 15.8 s (the dominant
+cost — 5-D Monte-Carlo); `pa_mcmc` ≈ 2 s (~1.74 s is a fixed `densityMclust` GMM
+fit + NN remap, the chain itself ~free); the SDM hook ≈ 4.5 s (fit + predict over
+the ~16.5k-cell background). For a downstream-HSM **sweep** the hypervolume is pure
+overhead, so the engine has flags to strip everything the sweep does not read.
+
+**Engine perf flags** (`virtualSpecies_nd`; every one defaults to the original
+behaviour, so `run_5d_experiment.R` / `run_5d_hsm.R` are byte-for-byte unchanged):
+- `compute_hypervolume = FALSE` — skip the 2 hypervolume calls (~70 % of a task).
+- `make_plots = FALSE` — skip the per-call ggplot / KDE / projection objects.
+- `compute_reference = FALSE` — skip the one-off reference-PA draw per sampler.
+- `manage_plan = FALSE` — the caller sets the `future` plan once (no per-call respawn).
+- `pa_mcmc(precomputed.env = <path>)` — ship the MCMC bundle to workers by FILE
+  PATH (a string, cached per worker), not the multi-MB object.
+`tune_5d_hsm.R` turns them all on; each is bit-identical when off.
+
+**Single-node parallelism (ONE node, ONE job, ≤64 cores — why this shape).** The
+ablation runs as a single `sbatch` on one node: `tune_5d_hsm.R` fans the
+independent `(cell × species)` jobs across the node's cores in ONE `future` pool
+(each job's realisations serial inside its worker). The default 4×4 grid is
+16×4 = 64 jobs — a clean fit for 64 cores (one wave). **Deliberately no SLURM job
+arrays**: a single node / single job is the easiest thing for someone else to
+reproduce (`sbatch sbatch/submit_tune_5d_hsm.sh`). Results depend only on the
+layered seeds inside `eval_realization`, so this is bit-identical to a serial run.
+
+**Env-build is incremental** (`build_env_stack.R`). Each environmental block
+(soil/terrain/veg/anth) is cached to its own `block_<name>.tif` keyed by its layer
+set, so editing one block's variables — a *slight* env change — re-harmonises only
+that block. Terrain is derived on a buffered European crop, not the globe. Both are
+bit-identical to a clean build. `FORCE_REBUILD=1` ignores the caches; `ENV_OUT_DIR=
+<dir>` builds to a sandbox (used to bit-identity-validate a change without touching
+the live `env5d`).
+
+**Discipline — do this whenever you change anything here:**
+- **Bit-identity:** an "optimization" must NOT change the numbers. Validate by
+  re-running on the unchanged input and diffing against the committed reference:
+  the full per-realisation rows live in the committed summaries
+  `results/5d_tune/summary_tune_grid.rds` (`$tune`, the 11.7k-row grid) and
+  `results/5d_hsm/summary_5d_hsm_full.rds` (`$hsm`, the 6k-row table), plus the
+  `env5d` rasters. The raw `*_metrics_5d_*.csv` dumps are **gitignored** (multi-MB,
+  redundant with those rds) — diff against `readRDS(...)$tune`/`$hsm`, or
+  regenerate a CSV with `write.csv(readRDS(f)$tune, …, row.names=FALSE)`.
+  `bench_cache.R` is the template for a with/without bit-identity check.
+- **Never edit a script while a SLURM job is running it** — `Rscript` parses the
+  file incrementally, so the running job dies with "unexpected end of input".
+- **Regenerate, don't recompute:** every figure/table comes from a saved CSV
+  (`hsm_report.R`, `hsm_aggregate_report.R`, `plot_tune_heatmap`), so a
+  post-processing fix never re-runs the sweep.
 
 ## Sampler interface
 
@@ -264,6 +417,14 @@ coordinates** (rounded to 4 d.p. ≈ 11 m).
 - **Pseudo-absence equality**: `N_pa` is derived from the **subsampled**
   presence count so the pres:PA ratio (`bgk_prev`) stays consistent
   across realisations.
+- **Downstream HSM arm**: the 50 Bernoulli realisations ARE the replication
+  (one held-out 70/30 split per realisation, no USE-style internal `n=5`
+  subsampling). HSM stats live in their OWN tidy CSV (`results5d_hsm/`), never
+  inside the 90 MB per-species result rds. Maxent = `maxnet` (pure-R, never
+  Java). The GLM is **linear** (USE's `Observed ~ .`): a quadratic GLM is
+  near-oracle on the exactly-Gaussian niche and blind to the sampler. Dunn
+  comparisons are **within-species** (the realisations are one species on one
+  fixed background, not 50 independent species) — no single omnibus p.
 
 ## Running the example
 

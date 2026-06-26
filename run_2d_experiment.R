@@ -156,8 +156,6 @@ p_box <- plot_experiment_boxplots(
   title = "Sampler comparison across virtual species")
 save_experiment_figure(p_box, file.path(out_dir, paste0("boxplots_metrics_2d_", mode, ".pdf")),
                        width = 7.0, panel_count = np)
-save_experiment_figure(p_box, file.path(out_dir, paste0("boxplots_metrics_2d_", mode, ".png")),
-                       width = 7.0, panel_count = np)
 for (mt in c("overlap", "coverage", "trueabs")) {
   metric_arg <- if (mt == "trueabs") "prop_true_abs" else mt
   ph <- if (mt == "coverage") 1.7 * length(grep("^rel_cov_", names(metrics))) else 3.2

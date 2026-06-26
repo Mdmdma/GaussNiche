@@ -151,9 +151,8 @@ saveRDS(summary_bundle, file.path(out_dir, paste0("summary_5d_", mode, ".rds")))
 np <- experiment_panel_count(metrics)
 p_box <- plot_experiment_boxplots(metrics, jitter = (N_REAL <= 30),
   title = "Sampler comparison across virtual species (5-D)")
-for (ext in c("pdf", "png"))
-  save_experiment_figure(p_box, file.path(out_dir, paste0("boxplots_metrics_5d_", mode, ".", ext)),
-                         width = 7.0, height = min(9.5, 1.6 * np))
+save_experiment_figure(p_box, file.path(out_dir, paste0("boxplots_metrics_5d_", mode, ".pdf")),
+                       width = 7.0, height = min(9.5, 1.6 * np))
 for (mt in c("overlap", "coverage", "trueabs")) {
   metric_arg <- if (mt == "trueabs") "prop_true_abs" else mt
   ph <- if (mt == "coverage") min(9.5, 1.5 * length(grep("^rel_cov_", names(metrics)))) else 3.2
@@ -170,19 +169,13 @@ for (nm in names(species_results)) {
                                        " — niche & pseudo-absences across all PC pairs"))
   save_experiment_figure(pmx, file.path(out_dir, paste0("pc_matrix_5d_", nm, "_", mode, ".pdf")),
                          width = 9.5, height = 9.5)
-  save_experiment_figure(pmx, file.path(out_dir, paste0("pc_matrix_5d_", nm, "_", mode, ".png")),
-                         width = 9.5, height = 9.5, dpi = 150)
 }
 # Geographic species x sampler grid (random / buffer-out / mcmc) — base-R, so
 # wrapped in a device by hand. The final figure of the paper.
 geo_samplers <- intersect(c("random", "buffer", "mcmc"), names(species_results[[1]]$samplers))
-for (dev in c("pdf", "png")) {
-  gf <- file.path(out_dir, paste0("geo_grid_5d_", mode, ".", dev))
-  if (dev == "pdf") grDevices::cairo_pdf(gf, width = 11, height = 12)
-  else grDevices::png(gf, width = 11, height = 12, units = "in", res = 150)
-  plot_geo_sampler_grid(species_results, samplers = geo_samplers, species_labels = species_labels)
-  dev.off()
-}
+grDevices::cairo_pdf(file.path(out_dir, paste0("geo_grid_5d_", mode, ".pdf")), width = 11, height = 12)
+plot_geo_sampler_grid(species_results, samplers = geo_samplers, species_labels = species_labels)
+dev.off()
 
 # --- 6. Console summary -------------------------------------------------------
 cat("\n================ SUMMARY ================\n")

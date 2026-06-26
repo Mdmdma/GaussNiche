@@ -1,0 +1,17 @@
+"predictor_set","species","comparison","cor_truth","rmse_truth","auc","tss","boyce"
+"pc5","sp1_generalist_common","buffer-out - RND",-0.008,0.04,0.102,0.206,-0.041
+"pc5","sp1_generalist_common","uniform+ - RND",-0.068,0.094,0.104,0.204,-0.09
+"pc5","sp2_specialist_common","uniform+ - RND",-0.094,0.079,0.041,0.117,-0.074
+"pc5","sp2_specialist_common","buffer-out - RND",-0.049,0.053,0.043,0.113,-0.059
+"pc5","sp3_generalist_rare","buffer-out - RND",-0.009,0.032,0.074,0.14,0
+"pc5","sp3_generalist_rare","uniform+ - RND",-0.156,0.097,0.05,0.11,-0.031
+"pc5","sp4_specialist_rare","buffer-out - RND",-0.01,0.016,0.005,0.018,0.003
+"pc5","sp4_specialist_rare","uniform+ - RND",-0.047,0.049,-0.003,0.012,0.02
+"raw12","sp1_generalist_common","buffer-out - RND",-0.01,0.043,0.11,0.204,-0.065
+"raw12","sp1_generalist_common","uniform+ - RND",-0.102,0.117,0.111,0.219,-0.125
+"raw12","sp2_specialist_common","uniform+ - RND",-0.139,0.107,0.041,0.124,-0.136
+"raw12","sp2_specialist_common","buffer-out - RND",-0.057,0.057,0.045,0.126,-0.113
+"raw12","sp3_generalist_rare","buffer-out - RND",-0.007,0.034,0.082,0.153,-0.006
+"raw12","sp3_generalist_rare","uniform+ - RND",-0.161,0.105,0.063,0.122,-0.007
+"raw12","sp4_specialist_rare","buffer-out - RND",0.006,-0.004,0.011,0.023,0.031
+"raw12","sp4_specialist_rare","uniform+ - RND",-0.04,0.045,-0.01,-0.022,-0.021

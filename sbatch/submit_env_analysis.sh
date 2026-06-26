@@ -4,7 +4,7 @@
 #SBATCH --output=output/env-analysis-%j.out
 #SBATCH --error=output/env-analysis-%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=8G
 #SBATCH --time=08:00:00
 

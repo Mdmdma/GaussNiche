@@ -1,0 +1,17 @@
+uniform+ settings ABLATION sweep (tune_5d_hsm.R, MODE=full) -- for the appendix.
+  grid: environmental.cutof.percentile in {0.001,0.005,0.01,0.05} x species.cutoff.threshold in {0.9,0.75,0.6,0.5}
+  fixed: 4 species, 25 Bernoulli realisations, pc5 predictors, chain 20000, max_pres 300, bgk_prev 1
+  speedups A1-A4 (uniform+ only / no hypervolume / pc5 / 25 reals); RND+buffer baseline = results/5d_hsm
+  job 4752127 ran all 16 cells; post-processing regenerated from the saved CSV (job crash was a mid-run file edit, data intact)
+  7970 ok rows. files: tune_hsm_metrics_5d_full.csv (raw), tune_cell_medians_full.csv, tune_heat_<metric>_{value,delta}_full.pdf
+
+EXTENSION (job 4756875): env_cutoff in {0.1, 0.2} added (mode=full, 25 reals, uniform+ only).
+  env=0.1  : usable; continues the monotonic trend (cor_truth ~0.68). Minor survivorship (n=96-100/100).
+  env=0.2  : DEGENERATE -- pa_mcmc cannot return >=5 pseudo-absences under the top-20%-density
+             exclusion, so all realisations are skipped (NOT a random fallback; fallback count = 0).
+             No usable rows -> excluded from the combined grid.
+  Combined files: *_full24.{csv,rds,pdf} = 20 usable cells (env 0.001-0.1 x species 0.9-0.5).
+  CONCLUSION: env_cutoff (not species_cutoff) is the lever; raising it 0.001->0.1 lifts cor_truth
+  0.63->0.68 monotonically but with diminishing returns, and the method degenerates by env=0.2.
+  Best usable cell cor_truth ~0.684 still well below RND 0.759 / buffer 0.725 -> the truth-recovery
+  gap is structural and cannot be tuned away with these two knobs.

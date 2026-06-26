@@ -1,0 +1,6 @@
+baseline HSM run (run_5d_hsm.R, MODE=full)
+  species.cutoff.threshold = 0.7
+  environmental.cutof.percentile = 0.001
+  chain.length = 20000, burnIn = 1000, max_pres = 300, bgk_prev = 1
+  samplers: random, buffer-out, uniform+(mcmc) ; 50 realisations ; predictors: pc5 + raw12
+  job 4728294, 36min, 6000 rows (5999 ok), non-perturbation = bit-identical

@@ -3,7 +3,10 @@
 # Run as the verification step before dispatching anything to SLURM.
 
 pkgs <- c("terra", "USE.MCMC", "mvtnorm", "MASS", "ggplot2", "viridis",
-          "hypervolume", "patchwork", "sf", "tictoc", "future", "furrr")
+          "hypervolume", "patchwork", "sf", "tictoc", "future", "furrr",
+          # downstream-HSM arm (run_5d_hsm.R / hsm_eval.R / hsm_plots.R):
+          # mgcv ships with base R; the rest come from submit_install_hsm_deps.sh.
+          "mgcv", "ranger", "gbm", "maxnet", "glmnet", "dunn.test")
 
 failed <- character()
 for (p in pkgs) {

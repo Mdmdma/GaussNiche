@@ -1,14 +1,106 @@
 ---
 name: publication-figures
-description: Regenerate the appendix MCMC-diagnostic figures of the markov-chain-sampler paper ("Pseudo-absences generation through a Markov Chain sampler") — autocorrelation, Gelman-Rubin, trace/posterior — as publication-ready vector PDFs where the manuscript expects them. Use when those appendix figures look low-DPI / off-house-style / decoupled from the current code; the authoritative producer is the USE.MCMC-side publication-figures skill (the figures come from its vignette). NOTE: the former Results "distribution of PC values" figure (generate-combined-plot) was REMOVED from the paper; the current Results figures are the GaussNiche §2.3 sampler-comparison boxplots produced by run_2d_experiment.R / run_5d_experiment.R, NOT this skill. NOT for in-vignette exploratory plots or the GaussNiche per-species report PDFs.
+description: Authoritative guide to ALL figures that go into the markov-chain-sampler paper and its downstream-HSM report — two families. PART A — the appendix MCMC-diagnostic figures (autocorrelation, Gelman-Rubin, trace/posterior), produced by the USE.MCMC vignette, rebuilt as journal-grade vector PDFs. PART B — the GaussNiche-produced report & appendix figures: the §2.3 sampler-comparison boxplots (run_2d/5d_experiment.R), the appendix PC-matrix + geo-grid placement figures, the downstream-HSM report hsm_full_report.pdf (hsm_report.R: win matrix + per-species all-metrics violins), the cross-species aggregates (hsm_aggregate_report.R), the Dunn summary, and the uniform+ ablation heatmaps (tune_5d_hsm.R). Use when (re)producing, restyling, locating, or copying ANY paper/report figure, or mapping figure→producer→destination. Final figures are vector PDFs (PDF-only); GaussNiche figures are hand-copied into ../markov-chain-sampler-paper/graphics/. For the ablation itself see the hsm-ablation skill.
 ---
 
 # Publication figures for the markov-chain-sampler paper
 
-This skill regenerates **only four figures** that the manuscript embeds, makes
+This skill is the authoritative guide to the figures in the paper and its
+downstream-HSM report. There are **two families**, with different producers:
+
+- **Part B (below)** — the **GaussNiche-produced** report & appendix figures
+  (§2.3 sampler-comparison, PC-matrix, geo-grid, the downstream-HSM report,
+  cross-species aggregates, Dunn summary, the uniform+ ablation heatmaps). Vector
+  PDFs from GaussNiche drivers, hand-copied into the paper. Most recent work.
+- **Part A (further down)** — the **appendix MCMC-diagnostic** figures
+  (autocorrelation, Gelman-Rubin, trace/posterior), produced by the **USE.MCMC
+  vignette**, rebuilt journal-grade.
+
+---
+
+## Part B — GaussNiche-produced report & appendix figures (§2.3 · downstream HSM · ablation)
+
+Produced by GaussNiche drivers (NOT the vignette), written as **vector PDFs**
+(PDF-only — no PNGs in the results dirs), persisted under `results/` so they
+survive the scratch purge, and **hand-copied** into
+`../markov-chain-sampler-paper/graphics/` (the paper's `make figures` pulls only
+the Part-A vignette figures). All are regenerable from the saved metrics CSVs
+**without recompute**.
+
+### Figure → producer → repo source
+
+**Results §2.3 — sampler-comparison boxplots** (overlap / per-axis coverage /
+prop-true-absence by sampler):
+
+| paper figure | producer | repo source |
+| --- | --- | --- |
+| `sampler-comparison-boxplots.pdf` (2-D, `fig:sampler_comparison`) | `run_2d_experiment.R` → `experiment_plots.R::plot_experiment_boxplots` | `results/2d/boxplots_metrics_2d_full.pdf` |
+| `sampler-comparison-boxplots-5d.pdf` (5-D, `fig:sampler_comparison_5d`) | `run_5d_experiment.R` | `results/5d/boxplots_metrics_5d_full.pdf` |
+
+**Appendix — pseudo-absence placement** (`run_5d_experiment.R`):
+
+| paper figure | producer | repo source |
+| --- | --- | --- |
+| `pcmatrix-5d-sp1..4.pdf` (per-species PC scatter matrix; lower=RND, upper=uniform+) | `experiment_plots.R::plot_pc_matrix` | `results/5d/` (regen) |
+| `geo-grid-5d.pdf` (species × sampler geographic grid) | `experiment_plots.R::plot_geo_sampler_grid` | `results/5d/` (regen) |
+
+**Appendix — downstream HSM** (baseline run = `run_5d_hsm.R`, all 3 samplers, in
+`results/5d_hsm/`):
+
+| figure | producer (hsm_plots.R fn) | file |
+| --- | --- | --- |
+| `hsm_full_report.pdf` — scrollable per-species report: overview medians, the **win matrix** (where uniform+ beats both naive), per-species all-metrics violins | `hsm_report.R` (`plot_hsm_win_matrix` + `plot_hsm_species_metrics`) | `results/5d_hsm/hsm_full_report.pdf` (+ `hsm_win_matrix.csv`) |
+| `agg_overlay_{pc5,raw12}.pdf` — cross-species single view (hue=sampler, shade=species) | `hsm_aggregate_report.R` (`plot_hsm_species_overlay`) | `results/5d_hsm/` |
+| `agg_species_row_{pc5,raw12}.pdf` — species-in-a-row, HSMs averaged | `plot_hsm_species_row` | `results/5d_hsm/` |
+| `hsm_dunn_summary_5d_full.pdf` — Dunn significance (uniform+ vs naive, within-species) | `run_5d_hsm.R` (`plot_hsm_dunn_summary`) | `results/5d_hsm/` |
+
+**Appendix — uniform+ ablation** (see the **hsm-ablation** skill):
+
+| figure | producer | file |
+| --- | --- | --- |
+| `tune_heat_<metric>_{value,delta}_grid.pdf` — env × species cutoff heatmaps (value + Δ-vs-RND) | `tune_5d_hsm.R` (`hsm_plots.R::plot_tune_heatmap`) | `results/5d_tune/` |
+
+### Regenerate from the saved CSV (no recompute)
+- HSM report: `Rscript hsm_report.R <3-sampler-csv> <out.pdf>` (e.g.
+  `results5d_hsm/hsm_metrics_5d_full.csv`).
+- Cross-species aggregates + tables: `Rscript hsm_aggregate_report.R <csv> <outdir>`.
+- Ablation heatmaps: `plot_tune_heatmap()` on `tune_hsm_metrics_5d_grid.csv`.
+- §2.3 / PC-matrix / geo-grid: `sbatch --export=ALL,MODE=figures
+  sbatch/submit_5d_experiment.sh` (re-renders from the saved `exp_*_full.rds`).
+
+### Styling conventions (Part B — distinct from Part A)
+- **Sampler colours (Okabe-Ito), ONE source of truth** in `experiment_plots.R`,
+  reused by `hsm_plots.R`:
+  `EXPERIMENT_SAMPLER_COLORS = c(random="#E69F00", buffer="#D55E00",
+  mcmc="#009E73", uniform="#56B4E9", nn="#CC79A7")`;
+  `EXPERIMENT_SAMPLER_LABELS = c(random="RND", buffer="buffer-out", uniform="USE",
+  mcmc="uniform+", nn="NN")`.
+- **Cross-species aggregates**: hue = sampler, shade (alpha) = species.
+- **Win matrix**: green = uniform+ beats both naive, amber = one, red = none; cell
+  text = signed margin vs the better naive sampler.
+- **Truth vs internal metrics**: `*_truth` = predicted map vs known suitability;
+  the rest = held-out test vs sampled PA — keep them grouped.
+- **PDF-only**, vector. Keep only the latest generation (ablation `_grid`, not
+  `_full`/`_full24`); never `*_smoke*`. Drivers emit PDF only.
+- These are report/working figures (titles allowed in-figure). For one copied into
+  the paper, move the title to the LaTeX `\caption{}` and, if journal-grade styling
+  is wanted, apply the Part-A `pub_theme`/`pub_save`.
+
+### Into the paper
+GaussNiche figures are **copied by hand** into
+`../markov-chain-sampler-paper/graphics/`. The paper's own `CLAUDE.md` holds the
+full figure→producer map across both repos — keep it in sync when adding an
+appendix figure. The downstream-HSM appendix figures back the prose for
+`text/appendix/appendix.tex`.
+
+---
+
+## Part A — appendix MCMC-diagnostic figures (USE.MCMC vignette)
+
+This part regenerates **only four figures** that the manuscript embeds, makes
 them publication-grade, and writes them under the **exact filenames** the paper's
 `\includegraphics` paths require. It is deliberately scoped: it does not touch the
-many exploratory plots in the vignette or the GaussNiche report PDFs.
+many exploratory plots in the vignette.
 
 > **These figures are produced by the USE.MCMC vignette, not by GaussNiche.** The
 > author's chosen approach is to improve them *in place* in the vignette chunks,
