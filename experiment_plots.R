@@ -258,3 +258,118 @@ save_experiment_figure <- function(plot, file, width = 7.0, height = NULL,
   }
   invisible(file)
 }
+
+# =============================================================================
+# Report-style per-species figures (ported from 6_compare_5d.R) — SAME layout and
+# colours as the GaussNiche report. Used for the appendix PC-matrix figures and
+# the final geographic species x sampler grid. Dimension-agnostic.
+# =============================================================================
+
+# Report sampler colours (steelblue / purple as in the report; buffer-out added).
+EXPERIMENT_REPORT_COLORS <- c(random = "steelblue", mcmc = "purple",
+                              buffer = "#D55E00", uniform = "darkorange")
+
+# plot_pc_matrix(): k x k scatterplot matrix of the niche in PC space, for one
+# species. Diagonal = per-PC marginal density (background grey, presences red,
+# each sampler's PA density); lower triangle = samplers[1] pseudo-absences, upper
+# triangle = samplers[2]; every cell = background KDE (grey) + presences (gold) +
+# niche suitability contours (firebrick, 0.1/0.5/0.95). `res` is one
+# virtualSpecies()/virtualSpecies_nd() result. Returns a patchwork ggplot.
+plot_pc_matrix <- function(res, samplers = c("random", "mcmc"),
+                           sampler_palette = EXPERIMENT_REPORT_COLORS,
+                           title = NULL, subtitle = NULL, max_pts = 1200L, ng = 70L) {
+  for (pk in c("mvtnorm", "MASS", "patchwork"))
+    if (!requireNamespace(pk, quietly = TRUE)) stop("plot_pc_matrix requires '", pk, "'.")
+  pcs <- grep("^PC[0-9]+$", names(res$background), value = TRUE)
+  pcs <- pcs[order(as.integer(sub("PC", "", pcs)))]
+  k   <- length(pcs); bg <- res$background
+  s1  <- samplers[1]; s2 <- samplers[min(2L, length(samplers))]
+  col_lower <- unname(sampler_palette[s1]); col_upper <- unname(sampler_palette[s2])
+  sub_ <- function(d) if (!is.null(d) && nrow(d) > max_pts) d[sample(nrow(d), max_pts), ] else d
+  pres     <- sub_(bg[bg$pa == 1L, , drop = FALSE])
+  pa_lower <- sub_(res$samplers[[s1]]$pseudo_ref)
+  pa_upper <- if (length(samplers) >= 2L) sub_(res$samplers[[s2]]$pseudo_ref) else NULL
+  has_pa   <- !is.null(pa_lower) || !is.null(pa_upper)
+  mu   <- res$niche$mu; Sigma <- res$niche$Sigma
+  peak <- mvtnorm::dmvnorm(matrix(mu, nrow = 1L), mean = mu, sigma = Sigma)
+  rng  <- setNames(lapply(pcs, function(p) range(bg[[p]])), pcs)
+
+  scatter <- function(i, j, pa, pa_col) {
+    xc <- pcs[min(i, j)]; yc <- pcs[max(i, j)]
+    g  <- expand.grid(X = seq(rng[[xc]][1], rng[[xc]][2], length.out = ng),
+                      Y = seq(rng[[yc]][1], rng[[yc]][2], length.out = ng))
+    sl <- matrix(rep(mu, each = nrow(g)), nrow = nrow(g)); colnames(sl) <- pcs
+    sl[, xc] <- g$X; sl[, yc] <- g$Y
+    g$suit <- mvtnorm::dmvnorm(sl[, pcs], mean = mu, sigma = Sigma) / peak
+    kd  <- MASS::kde2d(bg[[xc]], bg[[yc]], n = ng, lims = c(rng[[xc]], rng[[yc]]))
+    kdf <- expand.grid(X = kd$x, Y = kd$y); kdf$d <- as.vector(kd$z); kdf$d <- kdf$d / max(kdf$d)
+    p <- ggplot() +
+      geom_contour_filled(data = kdf, aes(X, Y, z = d),
+                          breaks = c(0, .05, .25, .5, .75, 1), alpha = .9) +
+      scale_fill_grey(start = .92, end = .45, guide = "none") +
+      geom_point(data = pres, aes(.data[[xc]], .data[[yc]]), colour = "#FFC400",
+                 size = .4, alpha = .6)
+    if (!is.null(pa))
+      p <- p + geom_point(data = pa, aes(.data[[xc]], .data[[yc]]), colour = pa_col,
+                          alpha = .55, size = .4)
+    p + geom_contour(data = g, aes(X, Y, z = suit), colour = "firebrick",
+                     linewidth = .4, breaks = c(0.1, 0.5, 0.95)) +
+      labs(x = xc, y = yc) + theme_classic(base_size = 7) +
+      theme(legend.position = "none", axis.title = element_text(size = 6),
+            plot.margin = margin(1, 1, 1, 1))
+  }
+  diagonal <- function(i) {
+    p <- pcs[i]
+    g <- ggplot() +
+      geom_density(data = bg,   aes(.data[[p]]), fill = "grey70", colour = "grey40", alpha = .5) +
+      geom_density(data = pres, aes(.data[[p]]), fill = "firebrick", colour = "firebrick", alpha = .3)
+    if (!is.null(pa_lower)) g <- g + geom_density(data = pa_lower, aes(.data[[p]]), colour = col_lower, fill = NA, linewidth = .5)
+    if (!is.null(pa_upper)) g <- g + geom_density(data = pa_upper, aes(.data[[p]]), colour = col_upper, fill = NA, linewidth = .5)
+    g + labs(title = p, x = NULL, y = NULL) + theme_classic(base_size = 7) +
+      theme(legend.position = "none", plot.title = element_text(size = 8, face = "bold"),
+            axis.text = element_blank(), axis.ticks = element_blank(),
+            plot.margin = margin(1, 1, 1, 1))
+  }
+  cells <- vector("list", k * k)
+  for (i in seq_len(k)) for (j in seq_len(k))
+    cells[[(i - 1L) * k + j]] <-
+      if (i == j) diagonal(i)
+      else if (i > j) scatter(i, j, pa_lower, col_lower)
+      else if (has_pa) scatter(i, j, pa_upper, col_upper)
+      else patchwork::plot_spacer()
+  if (is.null(subtitle))
+    subtitle <- sprintf("lower = %s (%s)  |  upper = %s (%s)  |  presences gold  |  niche red 0.1/0.5/0.95",
+                        s1, col_lower, s2, col_upper)
+  patchwork::wrap_plots(cells, nrow = k, ncol = k) +
+    patchwork::plot_annotation(title = title, subtitle = subtitle,
+                               theme = theme(plot.title = element_text(face = "bold")))
+}
+
+# plot_geo_sampler_grid(): base-R species x sampler grid of the suitability map
+# (YlOrRd) with each sampler's pseudo-absences overplotted (coloured per sampler).
+# Draws to the CURRENT graphics device (wrap in cairo_pdf/png in the caller).
+# Ported from 6_compare_5d.R's "pseudo-absences on the suitability map" page.
+plot_geo_sampler_grid <- function(res_list, samplers = c("random", "buffer", "mcmc"),
+                                  sampler_palette = EXPERIMENT_REPORT_COLORS,
+                                  species_labels = NULL, crs = "EPSG:4326",
+                                  main = "Pseudo-absences on the suitability map (species x sampler)") {
+  if (!requireNamespace("terra", quietly = TRUE)) stop("plot_geo_sampler_grid requires 'terra'.")
+  sp_names <- names(res_list); n_sp <- length(sp_names); n_s <- length(samplers)
+  lab <- function(nm) if (!is.null(species_labels) && nm %in% names(species_labels))
+    unname(species_labels[[nm]]) else nm
+  suit_r <- function(r) terra::rast(r$background[, c("x", "y", "suit")], type = "xyz", crs = crs)
+  op <- graphics::par(mfrow = c(n_sp, n_s), mar = c(2, 2, 3, 1), oma = c(0, 0, 2.5, 0))
+  on.exit(graphics::par(op), add = TRUE)
+  for (nm in sp_names) {
+    sr <- suit_r(res_list[[nm]])
+    for (s in samplers) {
+      terra::plot(sr, col = grDevices::hcl.colors(100, "YlOrRd", rev = TRUE),
+                  main = sprintf("%s · %s", lab(nm), s))
+      pts <- res_list[[nm]]$samplers[[s]]$pseudo_ref[, c("x", "y"), drop = FALSE]
+      if (!is.null(pts) && nrow(pts))
+        graphics::points(pts$x, pts$y, col = unname(sampler_palette[s]), cex = .35, pch = 16)
+    }
+  }
+  graphics::mtext(main, outer = TRUE, line = .5, font = 2)
+  invisible(NULL)
+}

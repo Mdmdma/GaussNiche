@@ -50,6 +50,27 @@ env_dir <- file.path(scratch, "GaussNiche", "env5d")
 out_dir <- file.path(scratch, "GaussNiche", "results5d_experiment")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
+# In "figures" mode, skip ALL computation and re-render from the saved full-run
+# results — so the figures come from this same script, not a one-off.
+if (mode == "figures") {
+  files <- list.files(out_dir, pattern = "^exp_.*_full\\.rds$", full.names = TRUE)
+  stopifnot("no exp_*_full.rds in out_dir; run mode=full first" = length(files) > 0)
+  species_results <- setNames(lapply(files, readRDS),
+                              sub("^exp_(.*)_full\\.rds$", "\\1", basename(files)))
+  species_results <- species_results[order(names(species_results))]
+  .labmap <- c(sp1_generalist_common = "Generalist · common",
+               sp2_specialist_common = "Specialist · common",
+               sp3_generalist_rare   = "Generalist · rare",
+               sp4_specialist_rare   = "Specialist · rare")
+  species_labels <- setNames(ifelse(names(species_results) %in% names(.labmap),
+                                    unname(.labmap[names(species_results)]),
+                                    names(species_results)), names(species_results))
+  metrics <- collect_experiment_metrics(species_results, species_labels = species_labels)
+  N_REAL  <- suppressWarnings(max(metrics$realization, na.rm = TRUE))
+  if (!is.finite(N_REAL)) N_REAL <- 50L
+  cat(sprintf("figures mode: loaded %d species from %s\n", length(species_results), out_dir))
+} else {
+
 # --- 1. Locked 5-D environment ----------------------------------------------
 envData <- terra::rast(file.path(env_dir, "final_stack_lean_natural.tif"))
 dt      <- readRDS(file.path(env_dir, "background_5d.rds"))
@@ -124,6 +145,7 @@ summary_bundle <- list(
   mode = mode, n_realizations = N_REAL, max_pres = MAXP,
   species_cutoff = CUTOFF, buffer_km = BUFFER_KM)
 saveRDS(summary_bundle, file.path(out_dir, paste0("summary_5d_", mode, ".rds")))
+}  # end compute branch (mode != "figures")
 
 # --- 5. Figures (vector PDF + PNG; capped height since 5-D has 7 metric rows) -
 np <- experiment_panel_count(metrics)
@@ -138,6 +160,28 @@ for (mt in c("overlap", "coverage", "trueabs")) {
   pm <- plot_experiment_metric(metrics, metric = metric_arg, jitter = (N_REAL <= 30))
   save_experiment_figure(pm, file.path(out_dir, paste0("box_", mt, "_5d_", mode, ".pdf")),
                          width = 7.0, height = ph)
+}
+
+# --- 5b. Report-style figures (same layout/colours as the GaussNiche report) --
+# Per-species PC scatterplot matrix (lower = random, upper = mcmc) for the appendix.
+for (nm in names(species_results)) {
+  pmx <- plot_pc_matrix(species_results[[nm]], samplers = c("random", "mcmc"),
+                        title = paste0(species_labels[[nm]],
+                                       " — niche & pseudo-absences across all PC pairs"))
+  save_experiment_figure(pmx, file.path(out_dir, paste0("pc_matrix_5d_", nm, "_", mode, ".pdf")),
+                         width = 9.5, height = 9.5)
+  save_experiment_figure(pmx, file.path(out_dir, paste0("pc_matrix_5d_", nm, "_", mode, ".png")),
+                         width = 9.5, height = 9.5, dpi = 150)
+}
+# Geographic species x sampler grid (random / buffer-out / mcmc) — base-R, so
+# wrapped in a device by hand. The final figure of the paper.
+geo_samplers <- intersect(c("random", "buffer", "mcmc"), names(species_results[[1]]$samplers))
+for (dev in c("pdf", "png")) {
+  gf <- file.path(out_dir, paste0("geo_grid_5d_", mode, ".", dev))
+  if (dev == "pdf") grDevices::cairo_pdf(gf, width = 11, height = 12)
+  else grDevices::png(gf, width = 11, height = 12, units = "in", res = 150)
+  plot_geo_sampler_grid(species_results, samplers = geo_samplers, species_labels = species_labels)
+  dev.off()
 }
 
 # --- 6. Console summary -------------------------------------------------------
