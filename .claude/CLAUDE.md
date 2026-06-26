@@ -137,10 +137,24 @@ GaussNiche/
 │   └── skills/
 │       ├── euler-rstudio-server/  runtime guidance for Euler RStudio.
 │       ├── euler-r-spack-setup/   R-install recipe for Euler rocker/rstudio.
-│       └── publication-figures/   regenerate the paper's in-scope figures
-│                                  (Results PC-distribution + appendix MCMC
-│                                  diagnostics) as publication-ready artifacts.
+│       └── publication-figures/   appendix MCMC-diagnostic figures of the paper
+│                                  (autocorrelation / Gelman-Rubin / trace); the
+│                                  USE.MCMC vignette is the authoritative producer.
 ```
+
+## Paper figures produced here
+
+`run_2d_experiment.R` and `run_5d_experiment.R` (via `experiment_plots.R`) produce
+the markov-chain-sampler paper's **Results** figures
+(`sampler-comparison-boxplots.pdf` 2-D, `sampler-comparison-boxplots-5d.pdf` 5-D)
+and the **appendix** per-species PC scatterplot matrices (`pcmatrix-5d-sp1..4.pdf`)
+and geographic pseudo-absence grid (`geo-grid-5d.pdf`). They are written under
+`<scratch>/GaussNiche/results{2d,5d_experiment}/` and **copied by hand into
+`../markov-chain-sampler-paper/graphics/`** — NOT via the paper's `make figures`
+(which pulls only the methods + MCMC-diagnostic figures from the USE.MCMC vignette).
+Re-render without recomputing via `sbatch --export=ALL,MODE=figures
+sbatch/submit_5d_experiment.sh`. The paper's `CLAUDE.md` holds the full
+figure→producer map for both repos.
 
 ## Higher-dimensional environment (the `5d-niche` extension)
 

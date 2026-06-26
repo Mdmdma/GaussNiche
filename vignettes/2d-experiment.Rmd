@@ -1,5 +1,5 @@
 ---
-title: "Sampler comparison across virtual species (2-D experiment)"
+title: "Sampler comparison across virtual species (2-D and 5-D)"
 output:
   rmarkdown::html_vignette:
     self_contained: false
@@ -21,17 +21,21 @@ knitr::opts_chunk$set(
 
 This vignette reproduces the **experimental setting** of the paper
 *Pseudo-absences generation through a Markov chain sampler* (§2.3): four virtual
-species (VS) in the leading two principal components of the WorldClim bioclimatic
-stack, with three pseudo-absence (PA) samplers benchmarked over `R` independent
-Bernoulli realisations. It is the reproducible companion the paper points to at
+species (VS) in a $2\times2$ factorial (breadth $\times$ position), with several
+pseudo-absence (PA) samplers benchmarked over `R` independent Bernoulli
+realisations. It is run in **two environmental spaces**: a 2-D space (the leading
+two PCs of the WorldClim bioclimatic stack) and a 5-D space (the higher-dimensional
+GaussNiche extension). It is the reproducible companion the paper points to at
 <https://github.com/danddr/GaussNiche>.
 
 > **Compute note.** Running the samplers (`pa_mcmc` Markov chains, `pa_uniform`
-> grid calibration via `optimRes`) is **minutes of work**, not a login-node task.
-> On a cluster, generate the full `R = 50` results with the SLURM driver
-> (`sbatch sbatch/submit_2d_experiment.sh`) and knit this vignette against them;
-> the inline fallback below runs a deliberately small demo so the document still
-> knits standalone.
+> grid calibration via `optimRes`, the 5-D hypervolumes) is **minutes of work**,
+> not a login-node task. On a cluster, generate the full `R = 50` results with the
+> SLURM drivers (`sbatch sbatch/submit_2d_experiment.sh`,
+> `sbatch sbatch/submit_5d_experiment.sh`) and knit this vignette against them; the
+> 2-D inline fallback below runs a deliberately small demo so the document still
+> knits standalone. The 5-D section loads precomputed results (it needs the
+> `env5d` stack on scratch).
 
 ```{r libraries}
 library(terra)
@@ -42,16 +46,18 @@ library(hypervolume)
 library(MASS)
 
 ## knitr sets the working directory to vignettes/, so the repo root is one up.
-source("../virtualSpecies_fn.R")
-source("../experiment_plots.R")
+source("../virtualSpecies_fn.R")    # 2-D engine + pa_random / pa_uniform / pa_mcmc
+source("../experiment_plots.R")     # dimension-agnostic boxplots + report-style figures
+source("../pa_buffer.R")            # geographic buffer-out sampler (50 km)
 ```
 
 ## The four virtual species
 
-Each VS is a bivariate Gaussian suitability surface in (PC1, PC2), normalised to
-peak 1. The design is a $2\times2$ factorial crossing **niche breadth**
-(generalist vs specialist) with **niche position** (common vs rare); all share
-$\rho = 0$ and a 1:1 presence:pseudo-absence ratio.
+Each VS is a Gaussian suitability surface, normalised to peak 1. The design crosses
+**niche breadth** (generalist vs specialist) with **niche position** (common vs
+rare); all share $\rho = 0$ and a 1:1 presence:pseudo-absence ratio. In 2-D the
+optimum $\mu$ and breadth $\sigma$ are fixed values; in 5-D they are multiples of
+each PC's background standard deviation (see the 5-D section).
 
 ```{r species-table, echo = FALSE}
 catalogue <- list(
@@ -66,99 +72,142 @@ knitr::kable(
     Position = c("common", "common", "rare", "rare"),
     mu       = vapply(catalogue, function(s) sprintf("(%g, %g)", s$mu[1], s$mu[2]), character(1)),
     sigma    = vapply(catalogue, function(s) sprintf("(%g, %g)", s$sigma_PC1, s$sigma_PC2), character(1))),
-  row.names = FALSE, caption = "The four virtual species (paper Table 1).")
+  row.names = FALSE, caption = "The four virtual species in 2-D (paper Table 1).")
 ```
 
-## The three samplers and three diagnostics
+## The samplers and the three diagnostics
 
-We benchmark the same presence set at every realisation with three samplers
-sharing the GaussNiche sampler interface:
+We benchmark the same presence set at every realisation with samplers sharing the
+GaussNiche sampler interface:
 
 * **RND** (`pa_random`) — uniform draw across the geographic background.
+* **buffer-out** (`pa_buffer_out`) — uniform draw, but only from cells beyond a
+  50 km buffer around the presences (a non-random geographic baseline, cf. the
+  original USE paper's primary source).
 * **USE** (`pa_uniform`) — uniform across the realised environmental space
-  (`USE.MCMC::paSampling`).
+  (`USE.MCMC::paSampling`). Grid-based, so **2-D only**.
 * **uniform+** (`pa_mcmc`) — the Markov-chain sampler that extends USE to higher
   dimensions with a Gaussian-mixture presence exclusion.
 
 Per (species, sampler, realisation) we record three metrics, stored in
 `result$samplers[[name]]$metrics`: hypervolume **overlap** (presence vs PA cloud;
-lower separates better), per-axis range **coverage** (`rel_cov_PC*`; PA PC-range /
-background PC-range), and **proportion of true absences** (`prop_true_abs`; PAs on
-true-absence cells, i.e. where the Bernoulli draw $y_i = 0$; higher is cleaner).
-The plotting module discovers the coverage axes
-at runtime, so the same code serves the 2-D experiment here and the k-D extension.
+lower separates better), per-axis range **coverage** (`rel_cov_PC*`), and
+**proportion of true absences** (`prop_true_abs`). The plotting module discovers
+the coverage axes at runtime, so the same code serves 2-D and 5-D.
 
-## Load the full results, or run a small demo
+# 2-D experiment
 
-```{r load-or-run}
+```{r load-or-run-2d}
 user        <- Sys.getenv("USER")
-results_rds <- file.path("/cluster/scratch", user, "GaussNiche", "results2d", "summary_2d_full.rds")
+results_2d  <- file.path("/cluster/scratch", user, "GaussNiche", "results2d", "summary_2d_full.rds")
 demo_n_real <- 6L   # only used by the standalone fallback
 
-if (file.exists(results_rds)) {
-  message("Using precomputed R = 50 results: ", results_rds)
-  bundle  <- readRDS(results_rds)
-  metrics <- bundle$metrics
-  source_note <- sprintf("Precomputed SLURM run (R = %d).", bundle$n_realizations)
+if (file.exists(results_2d)) {
+  message("Using precomputed 2-D results: ", results_2d)
+  metrics_2d <- readRDS(results_2d)$metrics
+  src_2d <- "Precomputed SLURM run (R = 50)."
 } else {
-  message("No precomputed results found — running a small inline demo (R = ", demo_n_real, ").")
+  message("No precomputed 2-D results — running a small inline demo (R = ", demo_n_real, ").")
   envData <- terra::rast(USE.MCMC::Worldclim_tmp, type = "xyz")
   rpc     <- rastPCA(envData, stand = TRUE)
   dt      <- na.omit(as.data.frame(rpc$PCs[[c("PC1", "PC2")]], xy = TRUE))
   bw      <- compute_bandwidth(dt)
-
-  shared <- list(
+  shared  <- list(
     dt = dt, envData = envData, rho = 0, max_pres = 300, bgk_prev = 1,
-    pa_samplers = list(random = pa_random, uniform = pa_uniform, mcmc = pa_mcmc),
+    pa_samplers = list(random = pa_random, buffer = pa_buffer_out,
+                       uniform = pa_uniform, mcmc = pa_mcmc),
     n_realizations = demo_n_real, seed_base = 42, seed_pseudo_base = 123,
     bw = bw, pa_env_rast = envData, verbose = FALSE, parallel = FALSE,
-    grid.res = 5, thres = 0.75, chain.length = 4000, burnIn = 500,
-    species.cutoff.threshold = 0.1)
-  res_list <- lapply(catalogue, function(s)
+    grid.res = 5, thres = 0.75, buffer_km = 50, chain.length = 4000, burnIn = 500,
+    species.cutoff.threshold = 0.75)
+  res_2d  <- lapply(catalogue, function(s)
     do.call(virtualSpecies, c(shared, list(mu = s$mu, sigma_PC1 = s$sigma_PC1, sigma_PC2 = s$sigma_PC2))))
-  metrics <- collect_experiment_metrics(
-    res_list, species_labels = vapply(catalogue, `[[`, character(1), "label"))
-  source_note <- sprintf("Standalone inline demo (R = %d, reduced chain).", demo_n_real)
+  metrics_2d <- collect_experiment_metrics(res_2d, species_labels = vapply(catalogue, `[[`, character(1), "label"))
+  src_2d <- sprintf("Standalone inline demo (R = %d, reduced chain).", demo_n_real)
 }
 ```
 
-## The demanded figure: boxplots of the three metrics
+Each box summarises a metric's distribution across the `R` Bernoulli realisations;
+rows are metrics (coverage split per PC axis), columns are species, boxes are
+samplers.
 
-Each box summarises the empirical distribution of a metric across the `R`
-Bernoulli realisations; rows are metrics (coverage split per PC axis), columns are
-species, and the three boxes per panel are the samplers.
-
-```{r boxplots, fig.height = 7}
-plot_experiment_boxplots(metrics, title = "Sampler comparison across virtual species")
+```{r boxplots-2d, fig.height = 7}
+plot_experiment_boxplots(metrics_2d, title = "Sampler comparison across virtual species (2-D)")
 ```
 
-`r source_note`
+`r src_2d` Here USE and uniform+ behave alike (uniform+ is a drop-in replacement
+for the grid-based USE) while both cover the environmental range better than the
+geographic samplers (RND, buffer-out).
 
-### Each metric on its own
+# 5-D (high-dimensional) experiment
 
-```{r per-metric-overlap, fig.height = 3.2}
-plot_experiment_metric(metrics, "overlap")
+The same four species are reproduced in a **five-dimensional** environmental space,
+following the GaussNiche higher-dimensional extension. The 5-D space augments the
+WorldClim climate baseline with climate-orthogonal predictors (soil pH, clay, bulk
+density and organic carbon; terrain ruggedness and topographic position; tree
+cover) on the same Central/Western-European 10 arc-min grid, keeping the leading
+**five principal components (~82.5% of variance)**. The niche optimum and breadth
+are now length-5 vectors specified relative to each component's background standard
+deviation: **generalist** $\sigma = 1.0\,\mathrm{sd}$, **specialist**
+$\sigma = 0.5\,\mathrm{sd}$; the **common** optimum is the mode of the 5-D
+background density and the **rare** optimum a fixed peripheral point.
+
+Two things change in 5-D. First, the grid-based **USE sampler is unavailable**
+(it is restricted to two dimensions), so the comparison is **RND vs buffer-out vs
+uniform+**, with buffer-out as the non-random baseline. Second, *uniform+* is the
+only sampler that keeps the pseudo-absences uniform across the *full* environment:
+the curse of dimensionality makes the geographic samplers under-cover the trailing
+components.
+
+```{r load-5d}
+results_5d <- file.path("/cluster/scratch", user, "GaussNiche", "results5d_experiment", "summary_5d_full.rds")
+have_5d <- file.exists(results_5d)
+if (have_5d) {
+  bundle_5d  <- readRDS(results_5d)
+  metrics_5d <- bundle_5d$metrics
+  message("Using precomputed 5-D results: ", results_5d)
+} else {
+  message("No precomputed 5-D results found at ", results_5d,
+          " — run `sbatch sbatch/submit_5d_experiment.sh` first; the 5-D figures are skipped.")
+}
 ```
 
-```{r per-metric-coverage, fig.height = 4.2}
-plot_experiment_metric(metrics, "coverage")
+```{r boxplots-5d, fig.height = 9, eval = have_5d}
+plot_experiment_boxplots(metrics_5d, title = "Sampler comparison across virtual species (5-D)")
 ```
 
-```{r per-metric-trueabs, fig.height = 3.2}
-plot_experiment_metric(metrics, "prop_true_abs")
+```{r note-5d, echo = FALSE, results = "asis", eval = !have_5d}
+cat("> *5-D results not available in this build; the boxplots above are skipped.*\n")
 ```
 
-## Reproducing the full run
+In 5-D, **uniform+ attains the highest range coverage on every principal
+component for all four species**, and the advantage widens on the trailing
+components (PC3--PC5), which the geographic samplers leave under-sampled.
+buffer-out separates strongly (low overlap, high true-absence) but covers the
+environment poorly — exactly the geographic-method limitation that *uniform+*
+overcomes while needing no grid.
 
-The headline figures in the paper come from the full `R = 50` analysis. On the
-cluster:
+Two further per-species figures are produced for the appendix by the same driver
+(`run_5d_experiment.R` via `experiment_plots.R`): a `plot_pc_matrix()` scatterplot
+matrix of the niche and pseudo-absences across all PC pairs (lower triangle = RND,
+upper = uniform+), and a `plot_geo_sampler_grid()` species $\times$ sampler map of
+the pseudo-absences back-projected onto the suitability surface.
+
+# Reproducing the full runs
+
+The headline `R = 50` results come from the SLURM drivers:
 
 ```sh
-sbatch sbatch/submit_2d_experiment.sh          # MODE=full, R from N_REALIZATIONS (default 50)
-# smoke check first:
-sbatch --export=ALL,MODE=smoke --cpus-per-task=2 --time=00:20:00 sbatch/submit_2d_experiment.sh
+# 2-D (4 samplers; cutoff 0.75):
+sbatch sbatch/submit_2d_experiment.sh
+# 5-D (RND / buffer-out / uniform+; env5d; cutoff 0.7):
+sbatch sbatch/submit_5d_experiment.sh
+# fast re-render of all 5-D figures from saved results (no recompute):
+sbatch --export=ALL,MODE=figures sbatch/submit_5d_experiment.sh
 ```
 
-The driver writes per-species `.rds`, a combined `metrics_2d_full.csv`, the
-`summary_2d_full.rds` this vignette loads, and the boxplot figures (vector PDF +
-PNG) to `<scratch>/GaussNiche/results2d/`.
+Each driver writes per-species `.rds`, a combined `metrics_*.csv`, the
+`summary_*.rds` this vignette loads, and the figures (vector PDF + PNG). The
+paper's Results figures, the appendix PC matrices, and the geographic grid are all
+produced here and copied into `../markov-chain-sampler-paper/graphics/`.
+```
