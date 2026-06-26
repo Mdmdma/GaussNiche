@@ -26,8 +26,17 @@ Both are `pa_mcmc` / `USE.MCMC::paSamplingMcmc` args, forwarded through
   pseudo-absences become more availability-like → better truth-recovery. **This is
   THE lever.** It also shrinks the samplable space (see degeneracy below).
 - **`species.cutoff.threshold`** — the presence-GMM percentile setting the
-  presence-exclusion strength (`paSamplingMcmc.R:161`). **A non-lever** here:
-  flat effect on every metric across the grid.
+  presence-exclusion strength (`paSamplingMcmc.R`, the `stats::quantile(species.densities, …)`
+  line). **Direction matters: HIGHER = WEAKER exclusion** (the target is
+  `1 − sp_density / quantile(sp_densities, p)`, so a high quantile `p` excludes only
+  the densest presences; a low `p` excludes almost everywhere). **A non-lever** here:
+  flat effect on every metric across the `{0.9,0.75,0.6,0.5}` grid.
+  **Endpoint — `species.cutoff.threshold = 1`** skips the presence GMM entirely and
+  samples the environment **uniformly** (presence-model OFF). This is the *continuous
+  limit* of the above, NOT a reversal: at `p = 1` only the single max-density point
+  would be excluded (measure-zero ≈ no exclusion), so pure uniform is the natural
+  endpoint. The default `SPECIES_CUTOFFS` excludes 1.0, so committed results are
+  unaffected; add it only if you want the no-exclusion endpoint in the sweep.
 
 The swept knobs only set thresholds **after** the per-realisation `densityMclust`
 species-GMM fit, which is why the GMM fit is identical across cells (a known
