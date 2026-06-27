@@ -34,7 +34,7 @@ apptainer exec \
       cat(\"\n== running MCMC-path tests against the freshly built package ==\n\")
       testthat::test_dir(
         file.path(\"$HOME\", \"USE.MCMC\", \"tests\", \"testthat\"),
-        filter = \"mclustDensityFunction|paSamplingMcmc|mcmcSampling|precomputeMcmcEnvironment\",
+        filter = \"paSampling|mclustDensityFunction|mcmcSampling|precomputeMcmcEnvironment|validation\",
         stop_on_failure = TRUE,
         reporter = \"summary\")
       cat(\"\n== all selected tests passed ==\n\")'

@@ -100,7 +100,7 @@ cat("fixed bandwidth:", paste(round(bw, 4), collapse = ", "), "\n")
 # then seeds its own chain with seed_pseudo_base + r -> independent realisations.
 cat("\nPrecomputing MCMC environment (PCA + env GMM) once for reuse...\n")
 env_bundle <- USE.MCMC::precomputeMcmcEnvironment(
-  env.data.raster = envData, dimensions = pc_cols, seed.number = 123, verbose = TRUE)
+  env.rast = envData, dimensions = pc_cols, seed.number = 123, verbose = TRUE)
 env_bundle["rng_state"] <- list(NULL)   # keep name, NULL value -> restore skipped
 
 if (mode == "smoke") {

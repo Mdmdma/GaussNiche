@@ -103,7 +103,7 @@ pa_mcmc <- function(background, N_pa, pres = NULL, seed = 123,
 
   pa_result <- tryCatch(
     USE.MCMC::paSamplingMcmc(
-      env.data.raster = env.rast, pres = pres_sf,
+      env.rast = env.rast, pres = pres_sf,
       n.samples = n_target, chain.length = chain.length, burnIn = burnIn,
       dimensions = dimensions,
       num.chains = num.chains, num.cores = num.cores,

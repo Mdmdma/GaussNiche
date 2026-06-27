@@ -40,7 +40,7 @@ pres_list <- lapply(seq_len(K), function(k) make_pres(100L + k))
 
 run_one <- function(pres, env_bundle = NULL) {
   USE.MCMC::paSamplingMcmc(
-    env.data.raster = env, pres = pres,
+    env.rast = env, pres = pres,
     n.samples = n.samples, chain.length = chain.length, burnIn = 1000,
     dimensions = dimensions, num.chains = 1, num.cores = 1,
     seed.number = seed.number, engine = "auto",
@@ -50,7 +50,7 @@ run_one <- function(pres, env_bundle = NULL) {
 ## --- (1) correctness: cached == uncached ------------------------------------
 cat("\n[1] Correctness: cached vs uncached (same seed) ...\n")
 env_bundle <- USE.MCMC::precomputeMcmcEnvironment(
-  env.data.raster = env, dimensions = dimensions, seed.number = seed.number)
+  env.rast = env, dimensions = dimensions, seed.number = seed.number)
 
 res_uncached <- run_one(pres_list[[1]], env_bundle = NULL)
 res_cached   <- run_one(pres_list[[1]], env_bundle = env_bundle)
@@ -80,7 +80,7 @@ t_uncached <- system.time(
 
 t_precompute <- system.time(
   env_bundle2 <- USE.MCMC::precomputeMcmcEnvironment(
-    env.data.raster = env, dimensions = dimensions, seed.number = seed.number)
+    env.rast = env, dimensions = dimensions, seed.number = seed.number)
 )[["elapsed"]]
 t_cached_calls <- system.time(
   for (k in seq_len(K)) run_one(pres_list[[k]], env_bundle = env_bundle2)

@@ -43,6 +43,8 @@ apptainer exec \
       ok <- vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)
       cat(\"present:\", paste(pkgs[ok], collapse=\" \"), \"\n\")
       cat(\"still missing:\", paste(pkgs[!ok], collapse=\" \"), \"\n\")'
+    echo '=== regenerate man/ + NAMESPACE from roxygen ==='
+    Rscript -e 'if (requireNamespace(\"devtools\", quietly = TRUE)) devtools::document(\"$PKG\") else roxygen2::roxygenise(\"$PKG\"); cat(\"DOCUMENT DONE\n\")'
     cd '$WORK'
     echo '=== R CMD build (WITH vignettes) ==='
     R CMD build '$PKG' --no-manual 2>&1 | tail -n 25

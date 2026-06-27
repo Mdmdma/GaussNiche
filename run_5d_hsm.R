@@ -120,7 +120,7 @@ cat("fixed bandwidth:", paste(round(bw, 4), collapse = ", "), "\n")
 
 cat("\nPrecomputing MCMC environment once (PCA + env GMM) for reuse...\n")
 env_bundle <- USE.MCMC::precomputeMcmcEnvironment(
-  env.data.raster = envData, dimensions = pc_cols, seed.number = 123, verbose = TRUE)
+  env.rast = envData, dimensions = pc_cols, seed.number = 123, verbose = TRUE)
 env_bundle["rng_state"] <- list(NULL)
 
 LIBS <- .libPaths()   # captured so the hook can restore it inside furrr workers

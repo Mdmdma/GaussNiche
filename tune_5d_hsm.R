@@ -97,7 +97,7 @@ species_labels <- vapply(SPECIES, `[[`, character(1), "label")
 bw <- compute_bandwidth_nd(dt, pc_cols)
 cat("\nPrecomputing MCMC environment once...\n")
 env_bundle <- USE.MCMC::precomputeMcmcEnvironment(
-  env.data.raster = envData, dimensions = pc_cols, seed.number = 123, verbose = FALSE)
+  env.rast = envData, dimensions = pc_cols, seed.number = 123, verbose = FALSE)
 env_bundle["rng_state"] <- list(NULL)
 # Save the (multi-MB) bundle to disk and pass its PATH to the sampler: furrr
 # ships the tiny string, each worker loads it once (cached). See .gn_load_env_bundle.

@@ -121,15 +121,15 @@ pa_uniform <- function(background, N_pa, pres = NULL, seed = 123,
     return(pa_random(background, N_pa, pres, seed))
   }
 
-  # When sub.ts = FALSE, USE returns the sf object directly (no $obs.tr).
-  # The sf GEOMETRY is in PC / E-space; geographic coordinates are stored
-  # as plain attribute columns 'x' and 'y' — retrieve them with st_drop_geometry().
-  pa_attrs <- sf::st_drop_geometry(pa_result)
+  # paSampling now returns a single sf whose GEOMETRY is the geographic (x, y)
+  # location (PC scores live in attribute columns), matching paSamplingMcmc/Nn.
+  # Pull the coordinates with st_coordinates() rather than st_drop_geometry().
+  pa_coords <- sf::st_coordinates(pa_result)
 
   # Match back to background rows by geographic coordinates (4 dp = ~11 m
   # precision, safe for any raster resolution >= 1 arc-second)
   bg_key <- paste(round(background$x, 4L), round(background$y, 4L))
-  pa_key <- paste(round(pa_attrs$x,   4L), round(pa_attrs$y,   4L))
+  pa_key <- paste(round(pa_coords[, 1L], 4L), round(pa_coords[, 2L], 4L))
 
   idx       <- match(pa_key, bg_key)
   idx_valid <- unique(idx[!is.na(idx)])
@@ -239,7 +239,7 @@ pa_mcmc <- function(background, N_pa, pres = NULL, seed = 123,
 
   pa_result <- tryCatch(
     USE.MCMC::paSamplingMcmc(
-      env.data.raster = env.rast,
+      env.rast        = env.rast,
       pres            = pres_sf,
       n.samples       = n_target,
       chain.length    = chain.length,

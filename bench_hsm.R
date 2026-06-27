@@ -40,7 +40,7 @@ dt$suit <- suit
 bw <- compute_bandwidth_nd(dt, pc_cols)
 
 cat("precompute MCMC env...\n")
-env_bundle <- USE.MCMC::precomputeMcmcEnvironment(env.data.raster = envData,
+env_bundle <- USE.MCMC::precomputeMcmcEnvironment(env.rast = envData,
               dimensions = pc_cols, seed.number = 123, verbose = FALSE)
 env_bundle["rng_state"] <- list(NULL)
 
