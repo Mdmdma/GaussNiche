@@ -18,6 +18,7 @@ set -uo pipefail
 cd "$HOME/GaussNiche"
 mkdir -p output
 source "$HOME/.config/euler/jupyterhub/config_r_studio"
+source "$HOME/GaussNiche/sbatch/eth_proxy.sh"   # outbound internet via the ETH proxy
 SIF="/cluster/scratch/$USER/rocker_rstudio_4.5.sif"
 [[ -f "$SIF" ]] || { echo "Missing $SIF"; exit 2; }
 LIB="$HOME/R/rocker-rstudio/4.5"

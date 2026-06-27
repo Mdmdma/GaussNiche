@@ -19,7 +19,7 @@
 set -uo pipefail
 cd "$HOME/GaussNiche"; mkdir -p output
 source "$HOME/.config/euler/jupyterhub/config_r_studio"
-module load eth_proxy 2>/dev/null || true
+source "$HOME/GaussNiche/sbatch/eth_proxy.sh"   # outbound internet via the ETH proxy
 SIF="/cluster/scratch/$USER/rocker_rstudio_4.5.sif"
 [[ -f "$SIF" ]] || { echo "Missing $SIF"; exit 2; }
 LIB="$HOME/R/rocker-rstudio/4.5"
@@ -28,8 +28,6 @@ WORK="/cluster/scratch/$USER/usemcmc_gated"; rm -rf "$WORK"; mkdir -p "$WORK"
 apptainer exec \
   --bind "/cluster/home/$USER,/cluster/software,/cluster/scratch/$USER" \
   "$SIF" bash -lc "
-    export http_proxy='http://proxy.ethz.ch:3128' https_proxy='http://proxy.ethz.ch:3128'
-    export HTTP_PROXY=\$http_proxy HTTPS_PROXY=\$https_proxy
     export R_LIBS='$LIB'
     echo '=== install optional packages used by the gated chunks (best-effort) ==='
     Rscript -e 'p <- c(\"gganimate\",\"gifski\",\"transformr\",\"rnaturalearthdata\")
