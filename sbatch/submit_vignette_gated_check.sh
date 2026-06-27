@@ -29,8 +29,17 @@ apptainer exec \
   --bind "/cluster/home/$USER,/cluster/software,/cluster/scratch/$USER" \
   "$SIF" bash -lc "
     export R_LIBS='$LIB'
+    # --- wire spack ImageMagick + pkgconf so the 'magick' R pkg builds + runs ---
+    # (the container ships no ImageMagick/pkg-config; /cluster/software is bind-mounted)
+    IM=/cluster/software/stacks/2024-06/spack/opt/spack/linux-ubuntu22.04-x86_64_v3/gcc-12.2.0/imagemagick-7.1.1-11-bt66hoqswwehd2eyhtkcstzw5fbkvajq
+    PKGCONF=/cluster/software/stacks/2024-06/spack/opt/spack/linux-ubuntu22.04-x86_64_v3/gcc-12.2.0/pkgconf-1.9.5-ju7uckx5ifkdkwwhp4li4u52btvbfmaj
+    mkdir -p \"\$HOME/.pcwrap\" && ln -sf \"\$PKGCONF/bin/pkgconf\" \"\$HOME/.pcwrap/pkg-config\"
+    export PATH=\"\$HOME/.pcwrap:\$IM/bin:\$PATH\"
+    export PKG_CONFIG_PATH=\"\$IM/lib/pkgconfig\"
+    export LD_LIBRARY_PATH=\"\$IM/lib:\${LD_LIBRARY_PATH:-}\"
+    echo \"[imagemagick] pkg-config Magick++ -> \$(pkg-config --modversion Magick++ 2>&1)\"
     echo '=== install optional packages used by the gated chunks (best-effort) ==='
-    Rscript -e 'p <- c(\"gganimate\",\"gifski\",\"transformr\",\"rnaturalearthdata\")
+    Rscript -e 'p <- c(\"gganimate\",\"magick\",\"transformr\",\"rnaturalearthdata\")
       m <- p[!vapply(p, requireNamespace, logical(1), quietly=TRUE)]
       if (length(m)) try(install.packages(m, repos=\"https://cloud.r-project.org\", lib=\"$LIB\"))
       for (q in p) cat(sprintf(\"  %-18s %s\n\", q, if (requireNamespace(q, quietly=TRUE)) \"OK\" else \"MISSING\"))'
@@ -70,14 +79,14 @@ apptainer exec \
       ## MCMC animate-* chunks : exact gganimate pattern from animate-sample-chain
       ok(\"MCMC gganimate animate() + anim_save() (animation toolchain)\", {
         if (!requireNamespace(\"gganimate\", quietly = TRUE) ||
-            !requireNamespace(\"gifski\", quietly = TRUE)) stop(\"gganimate/gifski not installed\")
+            !requireNamespace(\"magick\", quietly = TRUE)) stop(\"gganimate/magick not installed\")
         library(ggplot2); library(gganimate)
         sp <- data.frame(x = cumsum(rnorm(30)), y = cumsum(rnorm(30)),
                          density = 1, step = 1:30)
         a <- ggplot(sp) + geom_point(aes(x = y, y = x, color = step)) +
           geom_path(aes(x = y, y = x, color = step)) + theme_minimal() +
           transition_reveal(step) + ease_aes(\"linear\")
-        g <- gganimate::animate(a, renderer = gifski::gifski_renderer(),
+        g <- gganimate::animate(a, renderer = gganimate::magick_renderer(),
                                 width = 300, height = 250, fps = 5, duration = 2,
                                 nframes = 10)
         gganimate::anim_save(file.path(tempdir(), \"smoke.gif\"), g)
