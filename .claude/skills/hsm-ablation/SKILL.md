@@ -30,13 +30,18 @@ Both are `pa_mcmc` / `USE.MCMC::paSamplingMcmc` args, forwarded through
   line). **Direction matters: HIGHER = WEAKER exclusion** (the target is
   `1 − sp_density / quantile(sp_densities, p)`, so a high quantile `p` excludes only
   the densest presences; a low `p` excludes almost everywhere). **A non-lever** here:
-  flat effect on every metric across the `{0.9,0.75,0.6,0.5}` grid.
+  flat effect on every metric across the `{0.9,0.75,0.6,0.5}` grid — **and flat at
+  the `1.0` endpoint too** (see below).
   **Endpoint — `species.cutoff.threshold = 1`** skips the presence GMM entirely and
-  samples the environment **uniformly** (presence-model OFF). This is the *continuous
-  limit* of the above, NOT a reversal: at `p = 1` only the single max-density point
-  would be excluded (measure-zero ≈ no exclusion), so pure uniform is the natural
-  endpoint. The default `SPECIES_CUTOFFS` excludes 1.0, so committed results are
-  unaffected; add it only if you want the no-exclusion endpoint in the sweep.
+  samples the environment **uniformly** (presence-model OFF; `USE.MCMC` commit
+  `6903ab1`, C++ `Inf`-cutoff sentinel). This is the *continuous limit* of the above,
+  NOT a reversal: at `p = 1` only the single max-density point would be excluded
+  (measure-zero ≈ no exclusion), so pure uniform is the natural endpoint. **The
+  committed grid now INCLUDES `1.0`** as the fifth `species_cutoff` column: it
+  confirms the non-lever finding extends to the no-exclusion limit (its cell medians
+  sit inside the `{0.9..0.5}` band, e.g. cor_truth 0.618 at env 0.001, 0.695 at env
+  0.15). So disabling presence exclusion entirely does not change downstream-HSM
+  accuracy.
 
 The swept knobs only set thresholds **after** the per-realisation `densityMclust`
 species-GMM fit, which is why the GMM fit is identical across cells (a known
@@ -50,40 +55,60 @@ submit `sbatch/submit_tune_5d_hsm.sh`.
 # install HSM deps first if the env is fresh:  sbatch sbatch/submit_install_hsm_deps.sh
 # PARALLEL smoke (validates engine flags + grid plumbing; REQUIRED before full):
 sbatch --export=ALL,MODE=smoke --cpus-per-task=2 --time=00:30:00 sbatch/submit_tune_5d_hsm.sh
-# full grid (default 4x4):
+# full grid (script DEFAULT is 4x4: env {0.001,0.005,0.01,0.05} x species {0.9,0.75,0.6,0.5}):
 sbatch sbatch/submit_tune_5d_hsm.sh
-# custom / extended grid:
-sbatch --export=ALL,ENV_CUTOFFS=0.1,0.15,SPECIES_CUTOFFS=0.9,0.75,0.6,0.5 sbatch/submit_tune_5d_hsm.sh
+# the COMMITTED canonical grid = 8 env x 5 species_cutoff (incl the 1.0 uniform
+# endpoint) = 40 cells. A comma in a value breaks --export=<list>, so set the vars
+# in the submitting env and use --export=ALL:
+MODE=grid ENV_CUTOFFS="0.001,0.005,0.01,0.05,0.1,0.15,0.2,0.25" \
+  SPECIES_CUTOFFS="1.0,0.9,0.75,0.6,0.5" \
+  sbatch --export=ALL sbatch/submit_tune_5d_hsm.sh
 ```
 Env overrides: `ENV_CUTOFFS`, `SPECIES_CUTOFFS`, `N_REALIZATIONS` (default 25),
 `MAX_PRES` (300), `MIN_PRES` (12). Inputs: `env5d/{final_stack_lean_natural.tif,
 background_5d.rds}` + the baseline `results5d_hsm/hsm_metrics_5d_full.csv`
-(RND/buffer reference). The default grid: env ∈ {0.001,0.005,0.01,0.05}, species
-∈ {0.9,0.75,0.6,0.5}; the usable range was extended to env {0.1,0.15} (0.2 is
-degenerate — see below).
+(RND/buffer reference). The committed grid: env ∈ {0.001,0.005,0.01,0.05,0.1,0.15,0.2,0.25},
+species ∈ {1.0,0.9,0.75,0.6,0.5}. env=0.25 is ~24% random-fallback-contaminated and
+env=0.3 degenerates further — see "the result" / pitfalls.
 
-## Single-node parallelism + speedups (why a 24-cell grid runs in ~minutes)
+## Single-node parallelism + speedups (why the grid runs in ~minutes)
 The sweep runs as ONE `sbatch` on ONE node (no job arrays — easiest to reproduce).
 `tune_5d_hsm.R` fans the independent `(cell × species)` jobs across the node's
 cores in a SINGLE `future` pool, each job's realisations serial INSIDE its worker
 (`parallel = FALSE` on the `virtualSpecies_nd` call). The default 4×4 grid is
 16 cells × 4 species = 64 jobs → a clean fit for a 64-core node (one wave,
-`submit_tune_5d_hsm.sh` requests `--cpus-per-task=64`). A `SpatRaster` cannot
+`submit_tune_5d_hsm.sh` requests `--cpus-per-task=64`); the committed 40-cell grid
+is 160 jobs → 3 waves, ~11 min wall. A `SpatRaster` cannot
 cross a worker boundary, so `envData` is `terra::wrap()`ed once and `unwrap()`ed
 inside each job. A worker also runs under `future`'s L'Ecuyer RNG, but the
 Bernoulli `pa_matrix` draw uses `set.seed()` with no kind — so `virtualSpecies_nd`
 pins `RNGkind("Mersenne-Twister")` at entry, making a worker bit-identical to the
 main process (without this, the draws silently diverge under parallelism).
 
-**Bit-identity is on VALUES, not row counts (validated).** After an env or
-parallelism change, re-confirm by a *matched-key* diff (key on `species × sampler ×
-realization × predictor_set × algorithm × env_cutoff × species_cutoff`, max abs diff
-over shared rows) — NOT by row count. Every genuine-MCMC row matches the committed
-grid bit-for-bit (max abs diff `0`, checked at env 0.001–0.05 and env 0.1). Row
-counts differ slightly because the engine's `pa_mcmc`→`pa_random` fallback (shipped
-with `precomputed.env`) recovers a few degenerate-boundary units the older committed
-grid omits — ≤0.6 % of rows at the env-ceiling, shifting medians by <0.006. Identical
-values + a few extra boundary fallbacks = the restructure is clean.
+**The recent `USE.MCMC` rebuild did NOT change the sampler — proven byte-identical.**
+The `=1`/unify/CRAN commits look scary but none touch the `species_cutoff<1`
+mechanism: the `=1` branch is additive and inert for `<1`, the unify commit is
+interface-only (arg rename + guards), and `predict.densityMclust`→`stats::predict`
+is a verified no-op (`identical=TRUE`). Confirmed empirically: rebuilding `a57e34e`
+(0.0.4, pre-`=1`/pre-unify) and diffing vs HEAD (0.0.5) gives **byte-identical
+pseudo-absences** (same points, same env GMM densities/threshold) at env 0.05 and
+0.2. `env5d` + packages are unchanged too. *To re-verify after any future
+`USE.MCMC` change:* `git -C ~/USE.MCMC worktree add <tmp> <old-sha>`; in apptainer
+`R CMD INSTALL --no-multiarch --library=<tmplib> <tmp>` (deps from the main lib);
+then run `paSamplingMcmc(precomputed.env=<bundle>, seed.number=s, …)` with fixed
+seeds under each lib (`.libPaths(<tmplib>)` vs main) and diff the sampled
+coordinates — identical fingerprints ⇒ mechanism unchanged.
+**Why the OLD pre-`b716c0c` grid still doesn't reproduce bit-for-bit:** it was
+generated *mid-development* (the jobs ran the night of Jun 26, before the build/RNG
+state was finalized + committed; the `=1` work landed hours later). So it carries a
+different random *stream*, not a different mechanism — every per-realisation value
+differs, yet per-cell medians match the clean grid within 0.02 (cor_truth 0.021,
+auc 0.006, tss 0.022, rmse_truth 0.014; mixed sign). The **current** 40-cell grid
+is clean and fully reproducible: re-confirm a GaussNiche optimization by a
+*matched-key* diff (key on `species × sampler × realization × predictor_set ×
+algorithm × env_cutoff × species_cutoff`, max abs diff over shared rows) at a fixed
+build — when env 0.2/0.25 were added the env≤0.15 sub-grid re-ran bit-for-bit
+(max |diff| 0).
 
 The sweep also strips the engine to just the downstream-HSM numbers via flags:
 - **A1** `pa_samplers = list(mcmc = pa_mcmc)` — uniform+ only (RND/buffer reused).
@@ -102,21 +127,36 @@ All flags live in `virtualSpecies_nd_fn.R`; each defaults to the original behavi
 object `precomputed.env`), so `run_5d_hsm.R` / `run_5d_experiment.R` are untouched.
 
 ## The result (settled — do not re-litigate)
-- **`environmental.cutof.percentile` is the lever**: raising it 0.001 → 0.15
-  monotonically lifts `cor_truth` ~0.63 → ~0.70 and lowers `rmse_truth`,
-  confirming the rare-environment-trimming mechanism. `species_cutoff` is flat.
-- **The gap never closes.** Best usable cell (env=0.15) `cor_truth` ≈ 0.696, still
-  **−0.063 below RND (0.759)** and below buffer-out (0.725), with **diminishing
-  returns**.
-- **env = 0.2 is DEGENERATE** — the top-20%-density exclusion shrinks the
-  samplable space so much that `pa_mcmc` can't form ≥5 pseudo-absences and **every
-  realisation is skipped** (0 usable rows). This is NOT a random fallback
-  (fallback count = 0); ~0.1–0.15 is the hard ceiling.
-- **Discrimination erodes slightly** as env rises (AUC 0.97 → 0.96, TSS 0.87 →
-  0.84) — not a free lunch.
-- **Survivorship bias grows** near the ceiling: surviving (species × realisation)
-  units per cell drop 100 → ~96 (env 0.1) → ~91 (0.15) → 0 (0.2), so high-env
-  `cor_truth` is mildly optimistic.
+- **`environmental.cutof.percentile` is the lever**: raising it 0.001 → 0.25
+  monotonically lifts `cor_truth` ~0.62 → ~0.72 and lowers `rmse_truth`,
+  confirming the rare-environment-trimming mechanism.
+- **`species_cutoff` is a non-lever — including the `1.0` pure-uniform endpoint.**
+  At every env level the five `species_cutoff` columns `{1.0,0.9,0.75,0.6,0.5}` are
+  flat (spread ≤0.01 in cor_truth), so turning the presence model OFF entirely
+  (`= 1.0`) lands inside the band: disabling presence exclusion does not change
+  downstream-HSM accuracy.
+- **The gap never closes.** cor_truth reaches ~0.70 (env 0.15–0.20) and ~0.72 at
+  env 0.25 — i.e. it only catches up to *buffer-out* (0.725), still **~−0.04 below
+  RND (0.759)**, with diminishing returns; and the 0.25 climb is partly artefact
+  (fallback, below).
+- **Degeneracy onset is ~0.25–0.3, borderline/stochastic — and ALWAYS was in the
+  committed mechanism.** The clean committed sampler (`a57e34e`=HEAD) samples env=0.2
+  robustly (probe 10/10 at sp=1; grid ~4% fallback) — verified by rebuilding `a57e34e`
+  (300 pts at env=0.2, byte-identical to HEAD). The earlier "env=0.2 degenerate" note
+  was a **development-build artifact** (the old grid was generated mid-development),
+  NOT a property of the committed code — disregard it. Soft degeneracy onsets at
+  env≈0.25 (~24% of grid units fall back) and env≈0.3 (~20% at sp=1, probe). The
+  committed grid runs to env=0.25; env≥0.3 is not worth committing.
+- **Discrimination erodes** as env rises (AUC 0.97 → 0.94, TSS 0.88 → 0.80 by
+  env 0.25) — not a free lunch.
+- **Random-fallback contamination grows with env.** Units whose 5 `species_cutoff`
+  rows are identical (incl. uniform `=1` — a knob-blind random draw, which a genuine
+  chain never produces): 0.001 1% / 0.005 0 / 0.01 1% / 0.05 0 / 0.1 0 / 0.15 4% /
+  0.2 4% / **0.25 24%** (~1% baseline = sparse-presence rare-species reals,
+  env-independent). **The env=0.25 row is materially contaminated** — its cor_truth
+  (~0.72) is inflated toward RND (random recovers the true surface better), so treat
+  it as an UPPER BOUND; env≤0.2 is essentially clean. The genuine-MCMC ceiling is at
+  or below ~0.72 — which only strengthens "the gap is structural".
 
 **Conclusion: uniform+'s truth-recovery deficit is structural to
 environmental-uniform sampling, not a settings artifact — tuning narrows it ~50%
@@ -125,10 +165,11 @@ then the sampler degenerates before closing it.** The honest appendix framing is
 suitability-surface recovery.
 
 ## Outputs (durable in the repo; survive the scratch purge)
-`results/5d_tune/` — canonical = the `_grid` generation (env 0.001→0.15):
+`results/5d_tune/` — canonical = the `_grid` generation (env 0.001→0.25):
 - `summary_tune_grid.rds` — **the committed source of truth.** `$tune` is the full
-  per-(cell, species, realisation, algorithm) table (11.7k rows, tagged
-  `env_cutoff`/`species_cutoff`); `$cell` the per-cell medians; `$ref` the baseline.
+  per-(cell, species, realisation, algorithm) table (20k rows = 40 cells × 4 species
+  × 25 reals × 5 algos, tagged `env_cutoff`/`species_cutoff`); `$cell` the 40 per-cell
+  medians; `$ref` the baseline.
 - `tune_cell_medians_grid.csv` — per-cell median table (+ `n` survivorship column).
 - `tune_heat_<metric>_{value,delta}_grid.pdf` — value + Δ-vs-RND heatmaps (the
   ablation figures; see the publication-figures skill).
@@ -166,15 +207,20 @@ re-style or recover after a post-processing crash, regenerate from it (no fittin
   `cor_truth` for the wrong reason. **In the single-node (outer-`furrr`) design the
   fallback `warning()` fires inside a worker and is swallowed at the worker boundary
   — it never reaches the `.err`, so grepping the log misses it** (it worked only in
-  the old inner-parallel loop). Detect from the DATA instead: a fallback draw ignores
-  *both* MCMC knobs, so its rows are **identical across `species_cutoff`** for a fixed
-  `(species, realisation, env_cutoff)` and carry a `cor_truth` far above the cell's
-  MCMC median (≈0.85 vs ≈0.68 at env=0.1). Flag any high-`env_cutoff`
-  `(species, realisation)` whose rows repeat verbatim across `species_cutoff` as a
-  random fallback and exclude it for a clean number (at env=0.1 ≈12/2000 units).
-- **Survivorship** — a different degeneracy: `pa_mcmc` returns <5 PAs → the
-  realisation is skipped (no rows, NOT a fallback). Check the `n` column in
-  `tune_cell_medians_grid.csv`; a cell well below 100 is survivorship-biased.
+  the old inner-parallel loop). Detect from the DATA: a fallback draw is knob-blind,
+  so for a fixed `(species, realisation, algorithm, env_cutoff)` its `cor_truth` is
+  **identical across ALL 5 `species_cutoff` — including the uniform `=1` column, which
+  a genuine chain never matches** (uniform skips the GMM that `<1` fits). Count those
+  units per env for the contamination rate (measured on the 40-cell grid: 4% at
+  env 0.2, **24% at env 0.25**; ~1% baseline at low env = sparse rare-species reals).
+  Exclude them for a clean number, or treat a high-fallback cell (env≥0.25) as an
+  upper bound.
+- **Survivorship vs fallback** — two faces of the same boundary degeneracy. *Old*
+  builds **skipped** a `pa_mcmc`-returns-<5-PAs realisation (no rows → cell `n` < 100,
+  survivorship bias). The *current* build instead **recovers** it via the
+  `pa_mcmc`→`pa_random` fallback (cell `n` = 100, but that row is random). Check the
+  `n` column AND the fallback signature (above); high-env cells lean mildly optimistic
+  either way.
 - **NEVER edit a script while a SLURM job is running it.** `Rscript` parses the
   file incrementally, so an edit shifts the not-yet-parsed tail and the job dies
   with "unexpected end of input" after running for a while. The sweep data is

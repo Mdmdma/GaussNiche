@@ -396,13 +396,24 @@ plot_tune_heatmap <- function(tune_df, metric, ref = NULL, baseline = NULL,
   sub <- if (!is.null(baseline))
     sprintf("fixed baselines: RND = %.3f,  buffer-out = %.3f",
             baseline["random"], baseline["buffer"]) else NULL
+  # Highlight the winning cell (best ACTUAL metric value, identical for the value and
+  # the Delta-vs-RND views): a bold ring + bold value label, plus a naming caption.
+  agg$lab  <- lab
+  win_i    <- if (higher_better) which.max(agg$val) else which.min(agg$val)
+  agg$face <- ifelse(seq_len(nrow(agg)) == win_i, "bold", "plain")
+  win      <- agg[win_i, , drop = FALSE]
   ggplot(agg, aes(.data$env, .data$sp, fill = .data$plotval)) +
     geom_tile(colour = "white", linewidth = 0.6) +
-    geom_text(aes(label = lab), size = 3) +
+    geom_tile(data = win, aes(.data$env, .data$sp), fill = NA,
+              colour = "black", linewidth = 1.5, inherit.aes = FALSE) +
+    geom_text(aes(label = .data$lab), fontface = agg$face, size = 3) +
     fillscale +
     labs(x = "environmental.cutof.percentile", y = "species.cutoff.threshold",
-         title = title %||% metric, subtitle = sub) +
-    theme_minimal(base_size = 10) + theme(panel.grid = element_blank())
+         title = title %||% metric, subtitle = sub,
+         caption = sprintf("best cell (■): %s = %.3f  at  env = %s, sp = %s",
+                           metric, win$val, as.character(win$env), as.character(win$sp))) +
+    theme_minimal(base_size = 10) +
+    theme(panel.grid = element_blank(), plot.caption = element_text(hjust = 0, size = 8))
 }
 
 # =============================================================================

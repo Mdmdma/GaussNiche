@@ -54,17 +54,37 @@ prop-true-absence by sampler):
 | `agg_species_row_{pc5,raw12}.pdf` — species-in-a-row, HSMs averaged | `plot_hsm_species_row` | `results/5d_hsm/` |
 | `hsm_dunn_summary_5d_full.pdf` — Dunn significance (uniform+ vs naive, within-species) | `run_5d_hsm.R` (`plot_hsm_dunn_summary`) | `results/5d_hsm/` |
 
-**Appendix — uniform+ ablation** (see the **hsm-ablation** skill):
+**Appendix — uniform+ ablation** (see the **hsm-ablation** skill; the section
+PROSE + table live in `text/appendix/ablation.tex`, `\input` at the end of
+`appendix.tex`):
 
-| figure | producer | file |
+| paper figure | producer | repo source |
 | --- | --- | --- |
-| `tune_heat_<metric>_{value,delta}_grid.pdf` — env × species cutoff heatmaps (value + Δ-vs-RND) | `tune_5d_hsm.R` (`hsm_plots.R::plot_tune_heatmap`) | `results/5d_tune/` |
+| `tune-heat-cor-truth-grid.pdf` (`fig:ablation-heat`, left = truth-recovery) | `tune_5d_hsm.R` / regen `hsm_plots.R::plot_tune_heatmap` | `results/5d_tune/tune_heat_cor_truth_value_grid.pdf` |
+| `tune-heat-auc-grid.pdf` (`fig:ablation-heat`, right = discrimination) | same | `results/5d_tune/tune_heat_auc_value_grid.pdf` |
+
+- `plot_tune_heatmap` marks the **winning cell** (best ACTUAL metric — max, or min
+  for RMSE; same cell in the value and Δ-vs-RND views) with a thick black ring +
+  bold label + a naming caption. All 10 `tune_heat_<metric>_{value,delta}_grid.pdf`
+  carry it. The cor_truth and auc winners sit in **opposite corners** (high env vs
+  low env) — that contrast is the figure's whole point.
+- The paper uses only the two `*_value_*` heatmaps above; copy + rename (underscores
+  → hyphens, drop `_value`/`_grid`→`-grid`) into `graphics/`.
+- `tab:ablation` (RND/buffer baselines + the env sweep) is **hand-written** in
+  `ablation.tex` from the medians the hsm-ablation analysis prints (NOT auto-emitted).
+  Baselines: RND cor_truth 0.759 / buffer 0.726 (pc5, 50-real medians).
 
 ### Regenerate from the saved CSV (no recompute)
 - HSM report: `Rscript hsm_report.R <3-sampler-csv> <out.pdf>` (e.g.
   `results5d_hsm/hsm_metrics_5d_full.csv`).
 - Cross-species aggregates + tables: `Rscript hsm_aggregate_report.R <csv> <outdir>`.
-- Ablation heatmaps: `plot_tune_heatmap()` on `tune_hsm_metrics_5d_grid.csv`.
+- Ablation heatmaps (with the winner ring): `source("hsm_plots.R")`, then loop
+  `plot_tune_heatmap(readRDS("results/5d_tune/summary_tune_grid.rds")$tune, m,
+  ref = …$ref[[m]]["random"], baseline = …$ref[[m]], higher_better = m!="rmse_truth")`
+  over `m ∈ {cor_truth,rmse_truth,auc,tss,boyce}` × {value,delta}, `save_hsm_figure`
+  to `results/5d_tune/tune_heat_<m>_<kind>_grid.pdf`, then copy the two `*_value_*`
+  (cor_truth, auc) into `graphics/` as `tune-heat-{cor-truth,auc}-grid.pdf`. (Light,
+  no recompute; runs in the apptainer container in seconds.)
 - §2.3 / PC-matrix / geo-grid: `sbatch --export=ALL,MODE=figures
   sbatch/submit_5d_experiment.sh` (re-renders from the saved `exp_*_full.rds`).
 
@@ -91,7 +111,35 @@ GaussNiche figures are **copied by hand** into
 `../markov-chain-sampler-paper/graphics/`. The paper's own `CLAUDE.md` holds the
 full figure→producer map across both repos — keep it in sync when adding an
 appendix figure. The downstream-HSM appendix figures back the prose for
-`text/appendix/appendix.tex`.
+`text/appendix/appendix.tex` (the ablation is its own `text/appendix/ablation.tex`,
+`\input` at the end of `appendix.tex`).
+
+### Compiling the manuscript (Euler cluster)
+`make` has no PDF target; build by hand from the **repo root** (cwd = root for the
+Lato fonts and the `graphics/` paths):
+```bash
+# texlive is HIERARCHICAL — load stack + gcc FIRST, else `module avail texlive`
+# shows nothing and xelatex is not on PATH:
+module load stack/2025-06 gcc/12.2.0 texlive/20240312
+xelatex -interaction=nonstopmode main.tex   # run TWICE: 2nd pass resolves \ref to new floats/labels
+xelatex -interaction=nonstopmode main.tex
+```
+- **No `biber`/`bibtex` on the cluster** → every `\cite` renders `[?]` (~33) and a
+  single "undefined references" warning fires; this is EXPECTED, not a real error.
+  The citation-complete PDF comes from **Overleaf** (push the GitHub remote; Overleaf
+  pulls). A new section with no `\cite` (e.g. the ablation section) renders fine
+  locally. Compile cleanliness check: pass 1 with `-halt-on-error` exits 0, the log
+  says `Output written on main.pdf (N pages)`, and `grep -aiE "could not|not found"`
+  shows no missing graphics.
+- **No PDF rasterizer on the cluster** — the spack poppler / ghostscript /
+  imagemagick modules are *library-only* (no `gs` / `pdftoppm` / `pdftocairo` /
+  `convert` on PATH), and there is no `pdftools` / PyMuPDF. `pdftotext` extracts
+  nothing (the Lato xelatex PDF has no ToUnicode map), so **don't trust a text grep
+  to tell whether a section rendered** — rely on the clean-compile checks above.
+  To eyeball a *figure*, render the ggplot straight to PNG in the apptainer
+  container (`ggsave(p, "x.png", device = "png", dpi = 130)`, write under
+  `/cluster/scratch/$USER/…` so it is bind-mounted) and view that; or open
+  `main.pdf` directly in the JupyterHub / RStudio file browser.
 
 ---
 
@@ -710,6 +758,8 @@ confirm the final 4 chains / 50000 steps / 2D settings against the caption.
 5. If you switch any figure to `.pdf`, edit the matching `\includegraphics`
    extension in `text/results.tex` / `text/appendix/appendix.tex` AND the paper
    Makefile (sibling-repo manuscript edits — get user sign-off).
-6. Rebuild the manuscript (`latexmk -xelatex main.tex` in the sibling repo) to
-   confirm the figures resolve and are not rescaled.
+6. Rebuild the manuscript to confirm the figures resolve and are not rescaled. On
+   the Euler cluster use the module + double-`xelatex` recipe in "Compiling the
+   manuscript" above (NOT `latexmk`/`biber` — biber is absent; citations show `[?]`
+   locally and resolve on Overleaf).
 ```

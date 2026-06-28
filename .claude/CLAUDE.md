@@ -134,7 +134,9 @@ GaussNiche/
 │                                  metrics vs the fixed RND/buffer baseline. Speedups
 │                                  A1-A4 baked in (uniform+ only / compute_hypervolume=
 │                                  FALSE / pc5 only / 25 reals); sets the furrr plan
-│                                  ONCE (manage_plan=FALSE) across all 64 calls. Emits
+│                                  ONCE (manage_plan=FALSE) across all cell×species
+│                                  calls (committed grid: 40 cells, env→0.25 × 5
+│                                  species_cutoff incl =1 uniform → 160 calls). Emits
 │                                  per-cell median table + value/Δ-vs-RND heatmaps to
 │                                  results5d_tune. Via sbatch/submit_tune_5d_hsm.sh.
 ├── bench_hsm.R                    single-threaded profiler decomposing one
@@ -304,10 +306,14 @@ Settled finding: **uniform+ beats the naive samplers on discrimination
 (AUC/TSS/Sensitivity/Kappa) but loses on truth-recovery (cor/RMSE-to-known-
 suitability, CBI)** — random pseudo-absences reconstruct the true surface best.
 The **ablation** (`tune_5d_hsm.R`) sweeps the two `pa_mcmc` cutoffs to test whether
-tuning closes that gap: it does not — the gap narrows ~50 % then the sampler
-degenerates (`environmental.cutof.percentile` ≥ 0.2 yields no valid PAs). So the
+tuning closes that gap: it does not — `environmental.cutof.percentile` is the lever
+(`species.cutoff.threshold`, incl. the `=1` pure-uniform endpoint, is flat), and
+raising it only lifts truth-recovery to buffer-out's level, never to RND, before the
+sampler degenerates (env-cutoff ≳ 0.25, a borderline/stochastic onset). So the
 deficit is **structural to environmental-uniform sampling**, framed as an
-objective-dependent trade-off. Full detail + how to recompute on an env change:
+objective-dependent trade-off. (NB: the `=1`/unify/CRAN USE.MCMC rebuild did **not**
+change the sampler — verified byte-identical, `a57e34e`=HEAD; the once-noted "env=0.2
+degenerate" was a transient development-build artifact, not the committed mechanism.) Full detail + how to recompute on an env change:
 the **hsm-ablation** skill. The figures it produces: the **publication-figures** skill.
 
 **Where the time goes (cost model, measured by `bench_hsm.R`).** Per 5-D
@@ -348,7 +354,8 @@ the live `env5d`).
 - **Bit-identity:** an "optimization" must NOT change the numbers. Validate by
   re-running on the unchanged input and diffing against the committed reference:
   the full per-realisation rows live in the committed summaries
-  `results/5d_tune/summary_tune_grid.rds` (`$tune`, the 11.7k-row grid) and
+  `results/5d_tune/summary_tune_grid.rds` (`$tune`, the 20k-row grid = 40 cells:
+  8 env × 5 species_cutoff incl the `=1` pure-uniform endpoint) and
   `results/5d_hsm/summary_5d_hsm_full.rds` (`$hsm`, the 6k-row table), plus the
   `env5d` rasters. The raw `*_metrics_5d_*.csv` dumps are **gitignored** (multi-MB,
   redundant with those rds) — diff against `readRDS(...)$tune`/`$hsm`, or
