@@ -144,6 +144,14 @@ GaussNiche/
 │                                  hook / background-predict) — measured that the 5-D
 │                                  hypervolume_gaussian is ~70% of a task. Via
 │                                  sbatch/submit_bench_hsm.sh.
+├── profile_samplers.R             single-threaded profiler decomposing the cost of
+│                                  uniform (USE paSampling) vs uniform+ (paSamplingMcmc)
+│                                  into MODEL-FITTING vs SAMPLING/CHAIN, in 2-D and 5-D.
+│                                  Measured: the MCMC chain is ~0.007 s/10k steps (2-D),
+│                                  the GMM EM fits dominate (~99% of a call); USE's
+│                                  optimRes grid search ~380 s. Persists results/profile/
+│                                  profile_samplers.{csv,rds}. Via
+│                                  sbatch/submit_profile_samplers.sh.
 ├── experiment_plots.R             dimension-agnostic metric boxplots (overlap /
 │                                  per-axis range coverage / prop true-absence).
 │                                  Consumes virtualSpecies() AND

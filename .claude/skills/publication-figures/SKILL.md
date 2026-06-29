@@ -1,6 +1,6 @@
 ---
 name: publication-figures
-description: Authoritative guide to ALL figures that go into the markov-chain-sampler paper and its downstream-HSM report — two families. PART A — the appendix MCMC-diagnostic figures (autocorrelation, Gelman-Rubin, trace/posterior), produced by the USE.MCMC vignette, rebuilt as journal-grade vector PDFs. PART B — the GaussNiche-produced report & appendix figures: the §2.3 sampler-comparison boxplots (run_2d/5d_experiment.R), the appendix PC-matrix + geo-grid placement figures, the downstream-HSM report hsm_full_report.pdf (hsm_report.R: win matrix + per-species all-metrics violins), the cross-species aggregates (hsm_aggregate_report.R), the Dunn summary, and the uniform+ ablation heatmaps (tune_5d_hsm.R). Use when (re)producing, restyling, locating, or copying ANY paper/report figure, or mapping figure→producer→destination. Final figures are vector PDFs (PDF-only); GaussNiche figures are hand-copied into ../markov-chain-sampler-paper/graphics/. For the ablation itself see the hsm-ablation skill.
+description: Authoritative guide to ALL figures that go into the markov-chain-sampler paper and its downstream-HSM report — two families. PART A — the appendix MCMC-diagnostic figures (autocorrelation, Gelman-Rubin, trace/posterior), produced by the USE.MCMC vignette, rebuilt as journal-grade vector PDFs. PART B — the GaussNiche-produced report & appendix figures: the §2.3 sampler-comparison boxplots (run_2d/5d_experiment.R), the appendix PC-matrix + geo-grid placement figures, the downstream-HSM report hsm_full_report.pdf (hsm_report.R: win matrix + per-species all-metrics violins), the cross-species aggregates (hsm_aggregate_report.R), the Dunn summary, the uniform+ ablation heatmaps (tune_5d_hsm.R), and the sampler-cost profiling that feeds the §Computational-performance Results numbers (profile_samplers.R). Use when (re)producing, restyling, locating, or copying ANY paper/report figure or its underlying numbers, or mapping artifact→producer→destination. Final figures are vector PDFs (PDF-only); GaussNiche figures are hand-copied into ../markov-chain-sampler-paper/graphics/. For the ablation itself see the hsm-ablation skill.
 ---
 
 # Publication figures for the markov-chain-sampler paper
@@ -73,6 +73,38 @@ PROSE + table live in `text/appendix/ablation.tex`, `\input` at the end of
 - `tab:ablation` (RND/buffer baselines + the env sweep) is **hand-written** in
   `ablation.tex` from the medians the hsm-ablation analysis prints (NOT auto-emitted).
   Baselines: RND cor_truth 0.759 / buffer 0.726 (pc5, 50-real medians).
+
+**Results §Computational performance — sampler cost profiling** (this one is
+**NUMBERS, not a figure**; it feeds `text/results.tex`
+`\subsection{Computational performance}` [`sec:comp-performance`] and the
+Discussion `Computational cost` paragraph):
+
+| paper artifact | producer | repo source |
+| --- | --- | --- |
+| §Computational-performance prose numbers (fit-vs-chain decomposition, 2-D & 5-D; the USE `optimRes` cost) | `profile_samplers.R` via `sbatch/submit_profile_samplers.sh` | `results/profile/profile_samplers.{csv,rds}` |
+
+- **What it decomposes** (single-threaded, median over `PROFILE_REPS` runs):
+  one `uniform+` (`paSamplingMcmc`) call into PCA / **env-GMM fit** / env-GMM
+  density eval / **presence-GMM fit** / **Markov chain** (per-step, from a
+  chain-length regression) / remap, in 2-D (`Worldclim_tmp`) and 5-D (`env5d`);
+  and `uniform` (USE `paSampling`) into PCA / KDE bandwidth+fit / grid sampling /
+  **`optimRes`** grid-resolution search.
+- **Headline numbers the prose quotes** (check the CSV before editing the section):
+  chain ≈ 0.007 s / 10k steps (2-D), ≈ 0.06 s (5-D); env-GMM fit ≈ 7.7 s (2-D) /
+  12.6 s (5-D); presence-GMM fit ≈ 2.2 / 2.6 s; full call ≈ 10 / 15 s with
+  **model fitting ≈ 99 %**; USE `optimRes` ≈ 380 s (2-D). The section's message:
+  the chain is cheap, **fitting the GMMs dominates**, and the env fit is reusable
+  via `precomputeMcmcEnvironment`.
+- **Reproduce / refresh** (e.g. after an env or sampler change): `sbatch
+  sbatch/submit_profile_samplers.sh` (one node, ≤45 min; needs the `env5d`
+  artifacts + the rocker SIF). It is a SLURM job, **never a login-node task** (it
+  fits real GMM/KDE models). `PROFILE_REPS` (default 3) sets the repeat count.
+  Then update the rounded numbers in `text/results.tex` from
+  `results/profile/profile_samplers.csv` — regenerate-don't-recompute applies, but
+  the numbers themselves only change if the env/sampler does.
+- Distinct from `bench_hsm.R`, which decomposes the **downstream-HSM**
+  per-realisation cost (hypervolume / SDM hook / background-predict); this profiler
+  is the **sampler-only** cost view. Documented in the root `CLAUDE.md` repo map.
 
 ### Regenerate from the saved CSV (no recompute)
 - HSM report: `Rscript hsm_report.R <3-sampler-csv> <out.pdf>` (e.g.
