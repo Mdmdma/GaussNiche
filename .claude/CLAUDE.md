@@ -20,7 +20,7 @@ containerised R) consult the relevant skill before running anything:
 If neither applies (plain Linux/macOS workstation), the rest of this file
 is all you need.
 
-Three **task** skills are host-independent (load on demand, not gated by host):
+Two **task** skills are host-independent (load on demand, not gated by host):
 
 - `.claude/skills/publication-figures/SKILL.md` — authoritative guide to ALL
   figures in the markov-chain-sampler paper and its downstream-HSM report: Part A
@@ -34,15 +34,6 @@ Three **task** skills are host-independent (load on demand, not gated by host):
   the uniform+ (pa_mcmc) settings ablation (environmental.cutof.percentile ×
   species.cutoff.threshold sweep vs the fixed RND/buffer baseline). Read it when
   the environment changes and the ablation must be recomputed, or to tune uniform+.
-- `.claude/skills/adversarial-paper-review/SKILL.md` — heavy, non-routine
-  multi-persona ADVERSARIAL review of the `../markov-chain-sampler-paper`
-  manuscript. Fans out reader-base personas (ecologist / mathematician / student /
-  interested public / computer-scientist) + specialists (reproducibility /
-  implementation / abstract-vs-open-questions / Reviewer-2 skeptic) that review the
-  RENDERED submission PDF first (render `main.pdf` → page PNGs — the login node has
-  no rasterizer), adversarially refute every finding, then synthesize an editor
-  report. Runs via the Workflow tool (`adversarial_review.workflow.js`). Read it to
-  critique the paper from its target audiences before submission.
 
 ---
 
@@ -211,11 +202,8 @@ GaussNiche/
 │       ├── publication-figures/   authoritative figure→producer map for the paper
 │       │                          + downstream-HSM report (Part A vignette MCMC
 │       │                          diagnostics, Part B GaussNiche figures).
-│       ├── hsm-ablation/          run/recompute/interpret the uniform+ settings
-│       │                          ablation sweep.
-│       └── adversarial-paper-review/  heavy multi-persona adversarial review of the
-│                                  markov-chain-sampler manuscript (PDF-first;
-│                                  Workflow-driven; adversarial_review.workflow.js).
+│       └── hsm-ablation/          run/recompute/interpret the uniform+ settings
+│                                  ablation sweep.
 ```
 
 ## Paper figures produced here
