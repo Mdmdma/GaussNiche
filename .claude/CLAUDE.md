@@ -16,6 +16,12 @@ containerised R) consult the relevant skill before running anything:
 - `.claude/skills/euler-r-spack-setup/SKILL.md` — installing/repairing R
   packages with native deps (sf, terra, hypervolume, USE.MCMC, devtools)
   inside the Euler rocker/rstudio container.
+- `.claude/skills/euler-compute-session/SKILL.md` — launch a long interactive
+  SLURM session and run `claude` inside it for immediate compute; how the
+  SessionStart hook (`.claude/hooks/session_start_compute.sh`) auto-registers the
+  allocation and `.claude/bin/gnrun` routes each R job (run-here on compute vs.
+  `sbatch` on login). Read this to get a dev session with compute in hand, or
+  when a session banner says "COMPUTE ALLOCATION DETECTED".
 
 If neither applies (plain Linux/macOS workstation), the rest of this file
 is all you need.

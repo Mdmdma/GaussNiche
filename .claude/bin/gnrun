@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# gnrun — adaptive GaussNiche job runner.
+#
+# Runs an R script the RIGHT way for wherever it is invoked from:
+#   * inside a SLURM compute allocation -> run it NOW, directly, via
+#     `apptainer exec`, using the allocation's cores. NO nested sbatch (that
+#     would double-allocate and queue behind your own job).
+#   * on an Euler login node            -> submit it as a batch job through
+#     sbatch/submit_gnrun.sh (machine rule: never compute on the login node).
+#
+# This is the "adapt how jobs are run on the fly" primitive: one command, routed
+# by the live SLURM context that .claude/hooks/compute_env.sh detects.
+#
+# Usage:
+#   gnrun <script.R> [mode] [workers]
+#   gnrun tune_5d_hsm.R full            # compute: uses all allocated cores
+#   gnrun run_5d_hsm.R smoke 8          # compute: 8 workers
+#   gnrun run_5d_experiment.R full      # login  : sbatch with the wrapper's defaults
+#
+# Login-node sbatch overrides (env): GNRUN_CPUS, GNRUN_MEM_PER_CPU, GNRUN_TIME.
+set -euo pipefail
+
+REPO="${GN_REPO:-$HOME/GaussNiche}"
+cd "$REPO"
+
+# shellcheck source=/dev/null
+source "$REPO/.claude/hooks/compute_env.sh"
+gn_detect_compute
+
+RSCRIPT="${1:?usage: gnrun <script.R> [mode] [workers]}"
+MODE="${2:-full}"
+[[ -f "$RSCRIPT" ]] || { echo "gnrun: no such R script: $RSCRIPT" >&2; exit 2; }
+
+SIF="/cluster/scratch/$USER/rocker_rstudio_4.5.sif"
+
+if [[ "$GN_ON_COMPUTE" == "1" ]]; then
+  # ---- run here, now, inside the current allocation --------------------
+  WORKERS="${3:-$GN_CPUS}"
+  echo "[gnrun] compute node $GN_NODE (job $GN_JOBID): running $RSCRIPT mode=$MODE workers=$WORKERS directly"
+  [[ -f "$SIF" ]] || { echo "gnrun: missing SIF $SIF" >&2; exit 2; }
+
+  # Source ETH proxy FIRST: eth_proxy.sh re-inits Lmod (via
+  # $MODULESHOME/init/bash), so `module` is defined for config_r_studio's
+  # `module load` lines (a bare `srun --pty bash` does NOT inherit the module
+  # function), and it exports http(s)_proxy + the APPTAINERENV twins for any
+  # in-container downloads. config_r_studio then pulls in the spack native libs
+  # + krb5 shim. Neither source may abort the run, so disable errexit/nounset
+  # around them (a module hiccup, or config_r_studio's line-1 unset
+  # LD_LIBRARY_PATH reference, must not kill the job).
+  set +eu
+  # shellcheck source=/dev/null
+  [[ -f "$REPO/sbatch/eth_proxy.sh" ]] && source "$REPO/sbatch/eth_proxy.sh"
+  # shellcheck source=/dev/null
+  [[ -f "$HOME/.config/euler/jupyterhub/config_r_studio" ]] && source "$HOME/.config/euler/jupyterhub/config_r_studio"
+  set -eu
+
+  # Keep each parallel worker single-threaded so furrr/PSOCK workers do not
+  # oversubscribe the allocation (matches every sbatch/submit_*.sh).
+  export APPTAINERENV_OMP_NUM_THREADS=1 APPTAINERENV_OPENBLAS_NUM_THREADS=1 \
+         APPTAINERENV_MKL_NUM_THREADS=1 APPTAINERENV_OMP_THREAD_LIMIT=1
+
+  exec apptainer exec \
+    --bind "/cluster/home/$USER,/cluster/software,/cluster/scratch/$USER" \
+    "$SIF" Rscript "$RSCRIPT" "$MODE" "$WORKERS"
+else
+  # ---- login/other: submit to SLURM -----------------------------------
+  echo "[gnrun] $GN_CLASS node $GN_NODE: no allocation -> submitting $RSCRIPT to SLURM (sbatch/submit_gnrun.sh)"
+  mkdir -p "$REPO/output"   # #SBATCH --output=output/... is resolved at submit time, relative to cwd
+  # NOTE: do NOT pass the detector's GN_CPUS here — on a login node that is the
+  # login node's core count. Resources come from the wrapper's #SBATCH defaults
+  # unless the caller overrides via GNRUN_* below.
+  exec sbatch \
+    ${GNRUN_TIME:+--time="$GNRUN_TIME"} \
+    ${GNRUN_CPUS:+--cpus-per-task="$GNRUN_CPUS"} \
+    ${GNRUN_MEM_PER_CPU:+--mem-per-cpu="$GNRUN_MEM_PER_CPU"} \
+    --export="ALL,R_SCRIPT=$RSCRIPT,MODE=$MODE${3:+,WORKERS=$3}" \
+    "$REPO/sbatch/submit_gnrun.sh"
+fi
