@@ -54,7 +54,7 @@ if (mode == "smoke") {
 } else {
   N_REAL <- as.integer(Sys.getenv("N_REALIZATIONS", "50"))
   MAXP   <- as.integer(Sys.getenv("MAX_PRES", "300"))
-  CHAIN  <- 20000L; BURN <- 1000L
+  CHAIN  <- 30000L; BURN <- 1000L
   SPECIES_SET <- "all"; PAR <- TRUE
 }
 CUTOFF    <- as.numeric(Sys.getenv("SPECIES_CUTOFF", "0.7"))
