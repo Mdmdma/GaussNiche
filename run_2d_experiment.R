@@ -48,11 +48,11 @@ if (mode == "smoke") {
   SPECIES_SET <- "sp1"; PAR <- FALSE; CALIBRATE_GRID <- FALSE
 } else {
   N_REAL <- as.integer(Sys.getenv("N_REALIZATIONS", "50"))
-  MAXP   <- as.integer(Sys.getenv("MAX_PRES", "1000"))
+  MAXP   <- as.integer(Sys.getenv("MAX_PRES", "300"))
   CHAIN  <- 30000L; BURN <- 1000L
   SPECIES_SET <- "all"; PAR <- TRUE; CALIBRATE_GRID <- TRUE
 }
-CUTOFF <- as.numeric(Sys.getenv("SPECIES_CUTOFF", "0.1"))
+CUTOFF <- as.numeric(Sys.getenv("SPECIES_CUTOFF", "0.75"))
 cat(sprintf("mode=%s  n_real=%d  max_pres=%d  chain=%d  cutoff=%.2f  parallel=%s  workers=%d\n",
             mode, N_REAL, MAXP, CHAIN, CUTOFF, PAR, n_workers))
 
@@ -98,6 +98,15 @@ if (CALIBRATE_GRID) {
   }
 }
 
+# Precompute the MCMC environment ONCE (PCA + env GMM + threshold) and reuse it
+# across all pa_mcmc calls -- it is species/realisation-independent, so refitting
+# the env GMM on every one of the ~200 calls is pure waste. Mirrors the 5-D
+# drivers; rng_state -> NULL so each call's layered seed drives the chain.
+cat("\nPrecomputing MCMC environment once (PCA + env GMM) for reuse across pa_mcmc calls...\n")
+env_bundle <- USE.MCMC::precomputeMcmcEnvironment(
+  env.rast = envData, dimensions = c("PC1", "PC2"), seed.number = 123, verbose = TRUE)
+env_bundle["rng_state"] <- list(NULL)   # NULL -> chains driven by the layered seeds
+
 # --- 3. Species catalogue (Table 1) ------------------------------------------
 species_catalogue <- list(
   sp1_generalist_common = list(label = "Generalist · common",
@@ -123,6 +132,8 @@ shared_args <- list(
   n_workers = if (is.na(n_workers)) NULL else n_workers,
   grid.res = grid_res_opt, thres = 0.75, buffer_km = 50,
   chain.length = CHAIN, burnIn = BURN,
+  precomputed.env = env_bundle,               # env GMM fit once, reused by pa_mcmc
+  environmental.cutof.percentile = 0.001,
   species.cutoff.threshold = CUTOFF)
 
 # --- 5. Run all species ------------------------------------------------------
@@ -149,20 +160,9 @@ summary_bundle <- list(
   mode = mode, n_realizations = N_REAL, max_pres = MAXP)
 saveRDS(summary_bundle, file.path(out_dir, paste0("summary_2d_", mode, ".rds")))
 
-# --- 7. The demanded figures (boxplots; vector PDF + PNG) --------------------
-np <- experiment_panel_count(metrics)
-p_box <- plot_experiment_boxplots(
-  metrics, jitter = (N_REAL <= 30),
-  title = "Sampler comparison across virtual species")
-save_experiment_figure(p_box, file.path(out_dir, paste0("boxplots_metrics_2d_", mode, ".pdf")),
-                       width = 7.0, panel_count = np)
-for (mt in c("overlap", "coverage", "trueabs")) {
-  metric_arg <- if (mt == "trueabs") "prop_true_abs" else mt
-  ph <- if (mt == "coverage") 1.7 * length(grep("^rel_cov_", names(metrics))) else 3.2
-  pm <- plot_experiment_metric(metrics, metric = metric_arg, jitter = (N_REAL <= 30))
-  save_experiment_figure(pm, file.path(out_dir, paste0("box_", mt, "_2d_", mode, ".pdf")),
-                         width = 7.0, height = ph)
-}
+# --- 7. Figures: produced separately by make_figures.R (reads metrics_2d CSV) -
+#     This job is compute + save only; run_all_figures.sh submits the plot job
+#     after the 4 compute jobs so they can all run fully in parallel.
 
 # --- 8. Console summary -------------------------------------------------------
 cat("\n================ SUMMARY ================\n")

@@ -40,14 +40,18 @@ if (mode == "smoke") {
   CHAIN  <- 30000L; BURN <- 1000L
   SPECIES_SET <- "all"; PAR <- TRUE
 }
-CUTOFF    <- as.numeric(Sys.getenv("SPECIES_CUTOFF", "0.7"))
+CUTOFF    <- as.numeric(Sys.getenv("SPECIES_CUTOFF", "0.75"))
 BUFFER_KM <- as.numeric(Sys.getenv("BUFFER_KM", "50"))
 cat(sprintf("mode=%s  n_real=%d  max_pres=%d  chain=%d  cutoff=%.2f  buffer_km=%g  parallel=%s  workers=%d\n",
             mode, N_REAL, MAXP, CHAIN, CUTOFF, BUFFER_KM, PAR, n_workers))
 
 user    <- Sys.getenv("USER"); scratch <- file.path("/cluster/scratch", user)
-env_dir <- file.path(scratch, "GaussNiche", "env5d")
-out_dir <- file.path(scratch, "GaussNiche", "results5d_experiment")
+# Env/output paths default to the locked lean_natural env5d (unchanged behaviour);
+# GN_* overrides let a run point at an alternate E-space (e.g. the 24-layer build).
+env_dir <- Sys.getenv("GN_ENV_DIR",  file.path(scratch, "GaussNiche", "env5d"))
+out_dir <- Sys.getenv("GN_OUT_DIR",  file.path(scratch, "GaussNiche", "results5d_experiment"))
+stack_f <- Sys.getenv("GN_STACK_TIF", "final_stack_lean_natural.tif")
+bg_f    <- Sys.getenv("GN_BG_RDS",    "background_5d.rds")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 # In "figures" mode, skip ALL computation and re-render from the saved full-run
@@ -72,8 +76,8 @@ if (mode == "figures") {
 } else {
 
 # --- 1. Locked 5-D environment ----------------------------------------------
-envData <- terra::rast(file.path(env_dir, "final_stack_lean_natural.tif"))
-dt      <- readRDS(file.path(env_dir, "background_5d.rds"))
+envData <- terra::rast(file.path(env_dir, stack_f))
+dt      <- readRDS(file.path(env_dir, bg_f))
 pc_cols <- paste0("PC", 1:5)
 stopifnot(all(pc_cols %in% names(dt)), all(c("x", "y") %in% names(dt)))
 cat(sprintf("background cells: %d\n", nrow(dt)))
@@ -147,7 +151,10 @@ summary_bundle <- list(
 saveRDS(summary_bundle, file.path(out_dir, paste0("summary_5d_", mode, ".rds")))
 }  # end compute branch (mode != "figures")
 
-# --- 5. Figures (vector PDF + PNG; capped height since 5-D has 7 metric rows) -
+# --- 5. Figures: GATED to figures-mode, so `mode=full` is compute + save only
+#     and make_figures.R re-renders via `Rscript run_5d_experiment.R figures`
+#     from the saved exp_*_full.rds (lets the 4 compute jobs run in parallel). --
+if (mode == "figures") {
 np <- experiment_panel_count(metrics)
 p_box <- plot_experiment_boxplots(metrics, jitter = (N_REAL <= 30),
   title = "Sampler comparison across virtual species (5-D)")
@@ -176,6 +183,7 @@ geo_samplers <- intersect(c("random", "buffer", "mcmc"), names(species_results[[
 grDevices::cairo_pdf(file.path(out_dir, paste0("geo_grid_5d_", mode, ".pdf")), width = 11, height = 12)
 plot_geo_sampler_grid(species_results, samplers = geo_samplers, species_labels = species_labels)
 dev.off()
+}  # end figures block (mode == "figures")
 
 # --- 6. Console summary -------------------------------------------------------
 cat("\n================ SUMMARY ================\n")

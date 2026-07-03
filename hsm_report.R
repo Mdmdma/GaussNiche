@@ -27,7 +27,7 @@ out_pdf <- if (length(args) >= 2) args[2] else
   file.path(dirname(in_csv), "hsm_full_report.pdf")
 cat("input :", in_csv, "\noutput:", out_pdf, "\n")
 
-hsm <- read.csv(in_csv, stringsAsFactors = FALSE)
+hsm <- read_hsm_metrics(in_csv)   # CSV, or committed summary_5d_hsm_<mode>.rds$hsm fallback
 ok  <- hsm[hsm$status == "ok", , drop = FALSE]
 relab <- c(random = "RND", buffer = "buffer-out", mcmc = "uniform+")
 sp_order <- { u <- unique(ok[c("species", "species_label")]); u$species_label[order(u$species)] }

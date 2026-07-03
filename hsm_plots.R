@@ -64,6 +64,27 @@ collect_hsm_metrics <- function(x, species_labels = NULL) {
   hsm
 }
 
+#' Read the tidy HSM metrics: the CSV if present, else fall back to the committed
+#' summary rds ($hsm) in the same directory. The raw *_metrics_5d_*.csv dumps are
+#' gitignored (multi-MB), so on a fresh clone / after the scratch purge only
+#' `summary_5d_hsm_<mode>.rds` survives -- this lets hsm_report.R /
+#' hsm_aggregate_report.R restyle from committed data with no manual
+#' `write.csv(readRDS(...)$hsm, ...)` dump step first.
+read_hsm_metrics <- function(in_csv) {
+  if (file.exists(in_csv)) return(utils::read.csv(in_csv, stringsAsFactors = FALSE))
+  base <- basename(in_csv)
+  if (!grepl("^hsm_metrics_5d_.*\\.csv$", base))
+    stop(sprintf("HSM metrics CSV not found: %s", in_csv))
+  mode <- sub("\\.csv$", "", sub("^hsm_metrics_5d_", "", base))
+  rds  <- file.path(dirname(in_csv), paste0("summary_5d_hsm_", mode, ".rds"))
+  if (!file.exists(rds))
+    stop(sprintf("HSM metrics not found: neither %s nor %s exists", in_csv, rds))
+  message("[read_hsm_metrics] CSV absent -> loading $hsm from committed ", rds)
+  s <- readRDS(rds)
+  if (is.null(s$hsm)) stop(sprintf("%s has no $hsm slot", rds))
+  s$hsm
+}
+
 #' Long form for plotting: one row per (…, metric, value), ok rows + finite only.
 hsm_metrics_long <- function(hsm, metrics = HSM_DEFAULT_METRICS,
                              ok_only = TRUE, species_labels = NULL) {
@@ -368,7 +389,8 @@ hsm_delta_table <- function(hsm, metrics = HSM_DEFAULT_METRICS, ref = "random",
 #' higher_better metrics); otherwise the raw value on a viridis scale. `baseline`
 #' = c(random=, buffer=) annotates the fixed references in the subtitle.
 plot_tune_heatmap <- function(tune_df, metric, ref = NULL, baseline = NULL,
-                              higher_better = TRUE, title = NULL) {
+                              higher_better = TRUE, title = NULL,
+                              env_levels = NULL, sp_levels = NULL) {
   d <- collect_hsm_metrics(tune_df)
   if ("status" %in% names(d)) d <- d[d$status == "ok", , drop = FALSE]
   d <- d[is.finite(d[[metric]]), , drop = FALSE]
@@ -377,41 +399,67 @@ plot_tune_heatmap <- function(tune_df, metric, ref = NULL, baseline = NULL,
   agg <- aggregate(d[[metric]], by = list(env = d$env_cutoff, sp = d$species_cutoff),
                    FUN = function(v) stats::median(v, na.rm = TRUE))
   names(agg)[3] <- "val"
-  agg$env <- factor(agg$env, levels = sort(unique(agg$env)))
-  agg$sp  <- factor(agg$sp,  levels = sort(unique(agg$sp), decreasing = TRUE))
+  # Complete the INTENDED grid (env_levels x sp_levels, defaulting to what's present):
+  # any attempted (env, sp) cell with no ok median is a DEGENERATE cell (the sampler
+  # collapsed under too-strong exclusion) -> drawn black with a red cross, no number.
+  env_lev <- sort(unique(if (is.null(env_levels)) agg$env else as.numeric(env_levels)))
+  sp_lev  <- sort(unique(if (is.null(sp_levels))  agg$sp  else as.numeric(sp_levels)))
+  full <- merge(expand.grid(env = env_lev, sp = sp_lev), agg,
+                by = c("env", "sp"), all.x = TRUE)
+  full <- full[order(full$env, -full$sp), ]
+  full$env <- factor(full$env, levels = env_lev)
+  full$sp  <- factor(full$sp,  levels = rev(sp_lev))
+  full$degenerate <- !is.finite(full$val)
   if (!is.null(ref)) {
-    agg$plotval <- agg$val - ref
-    lim <- max(abs(agg$plotval), na.rm = TRUE); lim <- if (lim == 0) 1e-6 else lim
+    full$plotval <- full$val - ref
+    fin <- full$plotval[is.finite(full$plotval)]
+    lim <- if (length(fin)) max(abs(fin)) else 1e-6; if (lim == 0) lim <- 1e-6
     lo <- if (higher_better) "#b2182b" else "#2166ac"
     hi <- if (higher_better) "#2166ac" else "#b2182b"
     fillscale <- scale_fill_gradient2(low = lo, mid = "grey95", high = hi,
-                                      midpoint = 0, limits = c(-lim, lim), name = "Δ vs RND")
-    lab <- sprintf("%+.3f", agg$plotval)
+                                      midpoint = 0, limits = c(-lim, lim),
+                                      na.value = "black", name = "Δ vs RND")
+    full$lab <- ifelse(full$degenerate, "", sprintf("%+.2f", full$plotval))
   } else {
-    agg$plotval <- agg$val
+    full$plotval <- full$val
     fillscale <- scale_fill_viridis_c(option = "viridis",
-                                      direction = if (higher_better) 1 else -1, name = metric)
-    lab <- sprintf("%.3f", agg$val)
+                                      direction = if (higher_better) 1 else -1,
+                                      na.value = "black", name = metric)
+    full$lab <- ifelse(full$degenerate, "", sprintf("%.2f", full$val))
   }
   sub <- if (!is.null(baseline))
     sprintf("fixed baselines: RND = %.3f,  buffer-out = %.3f",
             baseline["random"], baseline["buffer"]) else NULL
-  # Highlight the winning cell (best ACTUAL metric value, identical for the value and
-  # the Delta-vs-RND views): a bold ring + bold value label, plus a naming caption.
-  agg$lab  <- lab
-  win_i    <- if (higher_better) which.max(agg$val) else which.min(agg$val)
-  agg$face <- ifelse(seq_len(nrow(agg)) == win_i, "bold", "plain")
-  win      <- agg[win_i, , drop = FALSE]
-  ggplot(agg, aes(.data$env, .data$sp, fill = .data$plotval)) +
+  # Winning cell = best ACTUAL metric value among the non-degenerate cells (bold ring
+  # + bold label). which.max/min skip NA, so degenerate cells can never win.
+  win_i <- if (higher_better) which.max(full$val) else which.min(full$val)
+  if (!length(win_i)) win_i <- 1L
+  full$face <- ifelse(seq_len(nrow(full)) == win_i, "bold", "plain")
+  win  <- full[win_i, , drop = FALSE]
+  # Red crosses over degenerate cells: factor positions -> integer tile centres.
+  deg <- full[full$degenerate, , drop = FALSE]
+  if (nrow(deg)) {
+    deg$x0 <- as.integer(deg$env) - 0.45; deg$x1 <- as.integer(deg$env) + 0.45
+    deg$y0 <- as.integer(deg$sp)  - 0.45; deg$y1 <- as.integer(deg$sp)  + 0.45
+  }
+  p <- ggplot(full, aes(.data$env, .data$sp, fill = .data$plotval)) +
     geom_tile(colour = "white", linewidth = 0.6) +
     geom_tile(data = win, aes(.data$env, .data$sp), fill = NA,
               colour = "black", linewidth = 1.5, inherit.aes = FALSE) +
-    geom_text(aes(label = .data$lab), fontface = agg$face, size = 3) +
-    fillscale +
-    labs(x = "environmental.cutof.percentile", y = "species.cutoff.threshold",
+    geom_text(aes(label = .data$lab), fontface = full$face, size = 2.7)
+  if (nrow(deg)) p <- p +
+    geom_segment(data = deg, aes(x = .data$x0, xend = .data$x1,
+                                 y = .data$y0, yend = .data$y1),
+                 colour = "red", linewidth = 0.7, inherit.aes = FALSE) +
+    geom_segment(data = deg, aes(x = .data$x0, xend = .data$x1,
+                                 y = .data$y1, yend = .data$y0),
+                 colour = "red", linewidth = 0.7, inherit.aes = FALSE)
+  p + fillscale +
+    labs(x = "Environmental cutoff (percentile)", y = "Species cutoff (quantile)",
          title = title %||% metric, subtitle = sub,
-         caption = sprintf("best cell (■): %s = %.3f  at  env = %s, sp = %s",
-                           metric, win$val, as.character(win$env), as.character(win$sp))) +
+         caption = sprintf("best cell (■): %s = %.3f  at  env = %s, sp = %s%s",
+                           metric, win$val, as.character(win$env), as.character(win$sp),
+                           if (nrow(deg)) sprintf("   ·  %d degenerate cell(s) (red ✕)", nrow(deg)) else "")) +
     theme_minimal(base_size = 10) +
     theme(panel.grid = element_blank(), plot.caption = element_text(hjust = 0, size = 8))
 }

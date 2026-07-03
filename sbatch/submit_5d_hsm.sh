@@ -4,8 +4,8 @@
 #SBATCH --output=output/5dhsm-%j.out
 #SBATCH --error=output/5dhsm-%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem-per-cpu=6G
+#SBATCH --cpus-per-task=48
+#SBATCH --mem-per-cpu=3G
 #SBATCH --time=08:00:00
 
 # Downstream-HSM arm of the 5-D experiment: the 4 species in 5-D (RND / buffer-out

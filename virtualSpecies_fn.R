@@ -105,7 +105,6 @@ pa_uniform <- function(background, N_pa, pres = NULL, seed = 123,
       grid.res  = grid.res,
       n.tr      = n_tr_approx,
       prev      = 1,
-      sub.ts    = FALSE,
       plot_proc = FALSE,
       verbose   = FALSE
     ),
@@ -397,6 +396,12 @@ sampler_effective_settings <- function(pa_samplers, dot_args = list()) {
 .fmt_scalar <- function(x) {
   if (is.null(x)) return("NULL")
   if (is.function(x)) return(deparse(x)[1L])
+  # Non-atomic / S4 values (e.g. a precomputed.env bundle carrying a SpatRaster)
+  # can't be coerced to character -- record a compact class placeholder instead
+  # of recursing into them and hitting `as.character(<S4>)`.
+  if (isS4(x))      return(sprintf("<%s>", class(x)[1L]))
+  if (is.list(x))   return(sprintf("<%s[%d]>", class(x)[1L], length(x)))
+  if (!is.atomic(x)) return(sprintf("<%s>", class(x)[1L]))
   if (length(x) == 0L) return("")
   if (length(x) == 1L) {
     if (is.numeric(x)) return(format(x, trim = TRUE))

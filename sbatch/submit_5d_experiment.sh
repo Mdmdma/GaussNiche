@@ -4,8 +4,8 @@
 #SBATCH --output=output/5dexp-%j.out
 #SBATCH --error=output/5dexp-%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem-per-cpu=6G
+#SBATCH --cpus-per-task=48
+#SBATCH --mem-per-cpu=3G
 #SBATCH --time=12:00:00
 
 # 4 virtual species in 5-D (RND / buffer-out / uniform+) over R Bernoulli

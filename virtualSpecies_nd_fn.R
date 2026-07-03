@@ -527,12 +527,14 @@ virtualSpecies_nd <- function(
     }), names(pa_samplers))
   else setNames(vector("list", length(pa_samplers)), names(pa_samplers))
 
-  # env.rast is only consumed by the inline KDE/MCMC samplers (they run rastPCA);
-  # when precomputed.env is supplied they ignore it (USE.MCMC paSamplingMcmc.R),
-  # so skip the per-task wrap/unwrap of the full env SpatRaster -- dead weight that
-  # every parallel task would otherwise deserialise for nothing.
-  needs_env_rast <- is.null(dot_args$precomputed.env)
-  pa_env_packed  <- if (parallel && needs_env_rast) terra::wrap(pa_env_rast) else NULL
+  # env.rast must reach every parallel task even when precomputed.env is supplied:
+  # pa_mcmc still reads terra::crs(env.rast) to build the presence sf (and the KDE/
+  # MCMC samplers run rastPCA on it when no bundle is given). A terra SpatRaster is
+  # an external pointer that does NOT survive serialisation to a multisession
+  # (PSOCK) worker, so it MUST be wrap()/unwrap()'d to cross the process boundary --
+  # shipping it raw yields "external pointer is not valid" and the task is skipped.
+  # (The wrapped raster is a global, shipped once per worker, not per task.)
+  pa_env_packed <- if (parallel) terra::wrap(pa_env_rast) else NULL
 
   # ---- 8. one (sampler, realisation) task ---------------------------------
   eval_realization <- function(s_name, r) {
@@ -550,7 +552,7 @@ virtualSpecies_nd <- function(
 
     task_dot <- dot_args
     if (parallel && s_name == "mcmc") task_dot$num.cores <- 1L
-    env_for_task <- if (parallel && needs_env_rast) terra::unwrap(pa_env_packed) else pa_env_rast
+    env_for_task <- if (parallel) terra::unwrap(pa_env_packed) else pa_env_rast
 
     pseudo_r <- tryCatch(
       do.call(pa_samplers[[s_name]], c(list(background = dt, N_pa = N_pa_r, pres = pres_r,

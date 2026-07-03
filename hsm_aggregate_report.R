@@ -31,7 +31,7 @@ out_dir <- if (length(args) >= 2) args[2] else dirname(in_csv)
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 cat("input :", in_csv, "\noutput:", out_dir, "\n")
 
-hsm <- read.csv(in_csv, stringsAsFactors = FALSE)
+hsm <- read_hsm_metrics(in_csv)   # CSV, or committed summary_5d_hsm_<mode>.rds$hsm fallback
 pred_sets <- unique(hsm$predictor_set)
 fig_metrics <- c("cor_truth", "rmse_truth", "auc", "tss", "boyce")  # 2 truth + 3 discrimination
 

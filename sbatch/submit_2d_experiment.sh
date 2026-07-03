@@ -4,8 +4,8 @@
 #SBATCH --output=output/2d-%j.out
 #SBATCH --error=output/2d-%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem-per-cpu=4G
+#SBATCH --cpus-per-task=48
+#SBATCH --mem-per-cpu=3G
 #SBATCH --time=04:00:00
 
 # Run the 4 virtual species in 2-D (random + uniform + mcmc samplers) — the

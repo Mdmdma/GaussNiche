@@ -145,7 +145,10 @@ envData_packed <- terra::wrap(envData)
 run_job <- function(cell, species) {
   ed <- terra::unwrap(envData_packed)                   # local, valid SpatRaster
   env_c <- grid$env_c[cell]; sp_c <- grid$sp_c[cell]; sp <- SPECIES[[species]]
-  res <- virtualSpecies_nd(
+  # A too-strong exclusion (low species.cutoff.threshold) can collapse the sampler
+  # entirely -> the call errors. Catch it so the cell drops to NULL (a DEGENERATE
+  # cell in the heatmap: black + red cross) instead of killing the whole future pool.
+  res <- tryCatch(virtualSpecies_nd(
     dt = dt, envData = ed, mu = sp$mu, sigma = sp$sigma, rho = 0,
     pc_cols = pc_cols, bgk_prev = 1,
     pa_samplers = list(mcmc = pa_mcmc),                 # A1: uniform+ only
@@ -157,7 +160,9 @@ run_job <- function(cell, species) {
     environmental.cutof.percentile = env_c,             # swept knob
     species.cutoff.threshold = sp_c,                    # swept knob
     precomputed.env = bundle_path,
-    verbose = FALSE, parallel = FALSE)                  # realisations serial INSIDE the job
+    verbose = FALSE, parallel = FALSE),                 # realisations serial INSIDE the job
+    error = function(e) NULL)
+  if (is.null(res)) return(NULL)
   h <- res$hsm
   if (!is.null(h)) { h$env_cutoff <- env_c; h$species_cutoff <- sp_c; h$species_label <- sp$label }
   h
@@ -170,22 +175,49 @@ future::plan(future::sequential)                          # tear the pool down
 
 rows <- rows[!vapply(rows, is.null, logical(1))]
 tune <- do.call(rbind, rows); rownames(tune) <- NULL
+
+# --- Incremental append (MERGE_PREV): recompute ONLY the (env, species_cutoff) CELLS
+# in this run's grid and keep every other cell from the summary at MERGE_PREV. Cells
+# are independent + bit-identical across grids (layered per-realisation seeds), so
+# this equals a full-grid recompute at a fraction of the cost. Keying on the (env, sp)
+# PAIR lets a run add new env ROWS, new species_cutoff COLUMNS, or refresh a subgrid.
+# No-op if unset. -------------------------------------------------------------------
+merge_prev  <- Sys.getenv("MERGE_PREV", "")
+prev_env_ax <- numeric(0); prev_sp_ax <- numeric(0)
+if (nzchar(merge_prev) && file.exists(merge_prev)) {
+  prev_summary <- tryCatch(readRDS(merge_prev), error = function(e) NULL)
+  prev <- prev_summary$tune
+  if (!is.null(prev) && nrow(prev)) {
+    prev_env_ax <- prev_summary$env_cutoffs; prev_sp_ax <- prev_summary$species_cutoffs
+    new_key  <- paste(round(tune$env_cutoff, 6), round(tune$species_cutoff, 6))
+    prev_key <- paste(round(prev$env_cutoff, 6), round(prev$species_cutoff, 6))
+    keep <- !(prev_key %in% new_key)                 # drop only the cells this run recomputed
+    cols <- intersect(names(prev), names(tune))
+    tune <- rbind(prev[keep, cols, drop = FALSE], tune[, cols, drop = FALSE])
+    tune <- tune[order(tune$env_cutoff, -tune$species_cutoff), ]; rownames(tune) <- NULL
+    cat(sprintf("MERGE_PREV: kept %d prior + %d new rows -> %d cells (env %s ; sp %s)\n",
+                sum(keep), nrow(tune) - sum(keep),
+                length(unique(paste(tune$env_cutoff, tune$species_cutoff))),
+                paste(sort(unique(tune$env_cutoff)), collapse = ","),
+                paste(sort(unique(tune$species_cutoff)), collapse = ",")))
+  } else cat("MERGE_PREV set but", merge_prev, "has no $tune -> using the new grid only\n")
+}
+# Full INTENDED axes = this run's grid U prior axes U whatever survived. A
+# species_cutoff that degenerated at EVERY env has no rows in `tune`, so it would
+# vanish from the axes derived from the data -- carry it explicitly (SP_CUTOFFS /
+# prev_sp_ax) so the heatmap still shows it as a black, red-crossed column.
+axis_env <- sort(unique(c(ENV_CUTOFFS, prev_env_ax, tune$env_cutoff)))
+axis_sp  <- sort(unique(c(SP_CUTOFFS,  prev_sp_ax,  tune$species_cutoff)))
+
 write.csv(tune, file.path(out_dir, paste0("tune_hsm_metrics_5d_", mode, ".csv")), row.names = FALSE)
 cat(sprintf("\nTune rows: %d  (ok=%d, skip_few_pres=%d, fit_failed=%d)\n",
             nrow(tune), sum(tune$status == "ok"), sum(tune$status == "skip_few_pres"),
             sum(tune$status == "fit_failed")))
 
-# --- 4. Baseline RND / buffer-out reference (pc5, knob-invariant) -------------
-ref <- list()
-if (file.exists(base_csv)) {
-  b <- read.csv(base_csv, stringsAsFactors = FALSE)
-  b <- b[b$status == "ok" & b$predictor_set == "pc5" & b$sampler %in% c("random", "buffer"), ]
-  for (m in c("auc","tss","boyce","cor_truth","rmse_truth"))
-    ref[[m]] <- c(random = stats::median(b[b$sampler=="random", m], na.rm=TRUE),
-                  buffer = stats::median(b[b$sampler=="buffer", m], na.rm=TRUE))
-  cat("\nBaseline pc5 reference (median over species+algos+reals):\n")
-  print(round(do.call(rbind, ref), 3))
-} else cat("\n(baseline", base_csv, "not found -> heatmaps without reference)\n")
+# --- 4. (Baseline RND/buffer reference + the value/Δ-vs-RND heatmaps moved to
+#     make_figures.R, which reads run_5d_hsm's medians at plot time. tune thus no
+#     longer reads base_csv, so it does NOT depend on the HSM job -> all 4 compute
+#     jobs run fully in parallel.) -----------------------------------------------
 
 # --- 5. Per-cell aggregate table + heatmaps ----------------------------------
 metr <- c("cor_truth","rmse_truth","auc","tss","boyce")
@@ -197,23 +229,12 @@ write.csv(cell, file.path(out_dir, paste0("tune_cell_medians_", mode, ".csv")), 
 cat("\n================= PER-CELL MEDIANS (pooled species+algos+reals) =================\n")
 print(cell, row.names = FALSE)
 
-for (m in metr) {
-  hb <- (m != "rmse_truth")
-  rr <- if (length(ref)) unname(ref[[m]]["random"]) else NULL
-  for (kind in c("value", "delta")) {
-    if (kind == "delta" && is.null(rr)) next
-    p <- tryCatch(plot_tune_heatmap(tune, m,
-           ref = if (kind == "delta") rr else NULL,
-           baseline = if (length(ref)) ref[[m]] else NULL, higher_better = hb,
-           title = sprintf("uniform+ %s%s", m, if (kind == "delta") " (Δ vs RND)" else "")),
-           error = function(e) { cat("heatmap", m, kind, "skipped:", conditionMessage(e), "\n"); NULL })
-    if (!is.null(p))
-      save_hsm_figure(p, file.path(out_dir, sprintf("tune_heat_%s_%s_%s.pdf", m, kind, mode)),
-                      width = 6.2, height = 4.6)
-  }
-}
+# heatmaps (value + Δ-vs-RND) are rendered by make_figures.R from summary_tune_<mode>.rds
+# ($tune) + run_5d_hsm's RND/buffer baseline. This job just computes + saves the grid.
 
-saveRDS(list(tune = tune, cell = cell, ref = ref, env_cutoffs = ENV_CUTOFFS,
-             species_cutoffs = SP_CUTOFFS, n_realizations = N_REAL, mode = mode),
+saveRDS(list(tune = tune, cell = cell,
+             env_cutoffs = axis_env,          # full intended axes (incl. degenerate columns)
+             species_cutoffs = axis_sp,
+             n_realizations = N_REAL, mode = mode),
         file.path(out_dir, paste0("summary_tune_", mode, ".rds")))
 cat("\nSaved to ", out_dir, "\n", sep = "")

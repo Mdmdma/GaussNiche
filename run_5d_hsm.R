@@ -57,7 +57,7 @@ if (mode == "smoke") {
   CHAIN  <- 30000L; BURN <- 1000L
   SPECIES_SET <- "all"; PAR <- TRUE
 }
-CUTOFF    <- as.numeric(Sys.getenv("SPECIES_CUTOFF", "0.7"))
+CUTOFF    <- as.numeric(Sys.getenv("SPECIES_CUTOFF", "0.75"))
 BUFFER_KM <- as.numeric(Sys.getenv("BUFFER_KM", "50"))
 MIN_PRES  <- as.integer(Sys.getenv("MIN_PRES", "12"))
 ALGOS     <- HSM_ALGORITHMS                               # glm, gam, rf, brt, maxent
@@ -65,13 +65,17 @@ cat(sprintf("mode=%s n_real=%d max_pres=%d chain=%d cutoff=%.2f buffer_km=%g min
             mode, N_REAL, MAXP, CHAIN, CUTOFF, BUFFER_KM, MIN_PRES, PAR, n_workers))
 
 user    <- Sys.getenv("USER"); scratch <- file.path("/cluster/scratch", user)
-env_dir <- file.path(scratch, "GaussNiche", "env5d")
-out_dir <- file.path(scratch, "GaussNiche", "results5d_hsm")
+# Env/output paths default to the locked lean_natural env5d (unchanged behaviour);
+# GN_* overrides let a run point at an alternate E-space (e.g. the 24-layer build).
+env_dir <- Sys.getenv("GN_ENV_DIR",  file.path(scratch, "GaussNiche", "env5d"))
+out_dir <- Sys.getenv("GN_OUT_DIR",  file.path(scratch, "GaussNiche", "results5d_hsm"))
+stack_f <- Sys.getenv("GN_STACK_TIF", "final_stack_lean_natural.tif")
+bg_f    <- Sys.getenv("GN_BG_RDS",    "background_5d.rds")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 # --- 1. Locked 5-D environment + raw-layer augmentation ----------------------
-envData <- terra::rast(file.path(env_dir, "final_stack_lean_natural.tif"))
-dt      <- readRDS(file.path(env_dir, "background_5d.rds"))
+envData <- terra::rast(file.path(env_dir, stack_f))
+dt      <- readRDS(file.path(env_dir, bg_f))
 pc_cols <- paste0("PC", 1:5)
 stopifnot(all(pc_cols %in% names(dt)), all(c("x", "y") %in% names(dt)))
 
@@ -84,9 +88,12 @@ if (!all(ok_raw)) {
   dt <- dt[ok_raw, , drop = FALSE]; raw_vals <- raw_vals[ok_raw, , drop = FALSE]
 }
 dt <- cbind(dt, raw_vals); rownames(dt) <- NULL
-predictor_sets <- list(pc5 = pc_cols, raw12 = raw_cols)
-cat(sprintf("background cells: %d   predictors: pc5=%d raw12=%d\n",
-            nrow(dt), length(pc_cols), length(raw_cols)))
+# raw-layer predictor set named by its layer count (raw12 for lean_natural,
+# raw24 for the full candidate build) so figures/CSV stay self-describing.
+raw_set_name   <- paste0("raw", length(raw_cols))
+predictor_sets <- setNames(list(pc_cols, raw_cols), c("pc5", raw_set_name))
+cat(sprintf("background cells: %d   predictors: pc5=%d %s=%d\n",
+            nrow(dt), length(pc_cols), raw_set_name, length(raw_cols)))
 
 pc_sd    <- vapply(dt[pc_cols], stats::sd, numeric(1))
 sig_gen  <- 1.0 * pc_sd
@@ -179,32 +186,10 @@ dunn <- tryCatch(hsm_dunn_test(hsm), error = function(e) {
 if (!is.null(dunn))
   write.csv(dunn, file.path(out_dir, paste0("hsm_dunn_5d_", mode, ".csv")), row.names = FALSE)
 
-# --- 6. Figures (per predictor_set: combined-across-species + per species) ----
-for (ps in names(predictor_sets)) {
-  comb <- tryCatch(plot_hsm_violin(hsm, predictor_set = ps, species_labels = species_labels,
-            title = sprintf("Downstream HSM accuracy across species (%s predictors)", ps)),
-            error = function(e) { cat("violin", ps, "skipped:", conditionMessage(e), "\n"); NULL })
-  if (!is.null(comb)) {
-    w <- 3 + 2.4 * length(unique(hsm$species))
-    save_hsm_figure(comb, file.path(out_dir, paste0("hsm_violin_", ps, "_", mode, ".pdf")),
-                    width = min(20, w), height = 8)
-  }
-  for (nm in names(species_hsm)) {
-    p <- tryCatch(plot_hsm_violin(hsm, predictor_set = ps, species = nm,
-           species_labels = species_labels,
-           title = sprintf("%s — HSM accuracy (%s predictors)", species_labels[[nm]], ps)),
-           error = function(e) NULL)
-    if (!is.null(p))
-      save_hsm_figure(p, file.path(out_dir, paste0("hsm_violin_", ps, "_", nm, "_", mode, ".pdf")),
-                      width = 9, height = 7)
-  }
-}
-if (!is.null(dunn)) {
-  ds <- tryCatch(plot_hsm_dunn_summary(dunn), error = function(e) NULL)
-  if (!is.null(ds))
-    save_hsm_figure(ds, file.path(out_dir, paste0("hsm_dunn_summary_5d_", mode, ".pdf")),
-                    width = 11, height = 3.5)
-}
+# --- 6. Figures: produced separately by the plot step -- make_figures.R (hsm
+#     violins + Dunn summary) + hsm_report.R + hsm_aggregate_report.R. This job
+#     is compute + save only. NB: the Dunn TEST above stays (its CSV is data);
+#     only the plotting is deferred so the 4 compute jobs run fully in parallel.
 
 # --- 7. Lightweight summary bundle (NO 90 MB per-species result rds) ---------
 summary_bundle <- list(
